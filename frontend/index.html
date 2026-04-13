@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HandwritingAI</title>
+  <style>
+    :root {
+      --bg: #0f0f13;
+      --surface: #1a1a24;
+      --surface2: #22222f;
+      --border: #2e2e40;
+      --accent: #7c6af7;
+      --accent2: #a78bfa;
+      --text: #e8e8f0;
+      --muted: #8888a8;
+      --success: #4ade80;
+      --error: #f87171;
+      --warning: #fbbf24;
+      --radius: 12px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    header {
+      width: 100%;
+      padding: 20px 40px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    header .logo { font-size: 1.5rem; }
+    header h1 { font-size: 1.25rem; font-weight: 600; }
+    header p { color: var(--muted); font-size: 0.85rem; margin-left: auto; }
+
+    main {
+      width: 100%;
+      max-width: 800px;
+      padding: 40px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 28px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+    }
+
+    .card h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .step-badge {
+      background: var(--accent);
+      color: white;
+      border-radius: 50%;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .card p.desc {
+      color: var(--muted);
+      font-size: 0.875rem;
+      margin-bottom: 18px;
+      line-height: 1.6;
+    }
+
+    .prompt-box {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px;
+      font-family: Georgia, serif;
+      font-size: 1rem;
+      line-height: 1.9;
+      color: var(--text);
+      margin-bottom: 12px;
+      user-select: all;
+    }
+
+    .prompt-box .line {
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    .copy-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      transition: all 0.15s;
+    }
+    .copy-btn:hover { border-color: var(--accent); color: var(--accent2); }
+
+    .upload-zone {
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      padding: 36px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      position: relative;
+    }
+    .upload-zone:hover, .upload-zone.dragover {
+      border-color: var(--accent);
+      background: rgba(124, 106, 247, 0.06);
+    }
+    .upload-zone input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+    }
+    .upload-zone .icon { font-size: 2.5rem; margin-bottom: 10px; }
+    .upload-zone p { color: var(--muted); font-size: 0.875rem; }
+    .upload-zone strong { color: var(--text); }
+
+    .file-list {
+      margin-top: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .file-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--surface2);
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+    }
+    .file-item .fname { flex: 1; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-item .fsize { color: var(--muted); font-size: 0.75rem; }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+    .tab {
+      padding: 8px 20px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: none;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 0.875rem;
+      transition: all 0.15s;
+    }
+    .tab.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
+    .tab:hover:not(.active) { border-color: var(--accent); color: var(--accent2); }
+
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    .font-name-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .font-name-row label { font-size: 0.875rem; color: var(--muted); white-space: nowrap; }
+    .font-name-row input {
+      flex: 1;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 0.875rem;
+    }
+    .font-name-row input:focus { outline: none; border-color: var(--accent); }
+
+    .btn {
+      padding: 10px 24px;
+      border-radius: 8px;
+      border: none;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: white;
+    }
+    .btn-primary:hover { background: var(--accent2); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .btn-secondary:hover { border-color: var(--accent); }
+
+    .status-bar {
+      display: none;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 18px;
+      border-radius: 8px;
+      margin-top: 16px;
+      font-size: 0.875rem;
+    }
+    .status-bar.visible { display: flex; }
+    .status-bar.processing { background: rgba(124, 106, 247, 0.12); border: 1px solid var(--accent); }
+    .status-bar.done { background: rgba(74, 222, 128, 0.1); border: 1px solid var(--success); color: var(--success); }
+    .status-bar.error { background: rgba(248, 113, 113, 0.1); border: 1px solid var(--error); color: var(--error); }
+
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2px solid var(--accent);
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .result-box {
+      display: none;
+      margin-top: 16px;
+    }
+    .result-box.visible { display: block; }
+    .result-text {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 18px;
+      font-family: Georgia, serif;
+      font-size: 0.95rem;
+      line-height: 1.8;
+      color: var(--text);
+      white-space: pre-wrap;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .result-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .download-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--success);
+      color: #0f1f0f;
+      padding: 10px 22px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      text-decoration: none;
+      transition: opacity 0.15s;
+    }
+    .download-link:hover { opacity: 0.85; }
+
+    .info-row {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-top: 4px;
+    }
+    .info-pill {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 4px 14px;
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+
+    .divider { border: none; border-top: 1px solid var(--border); }
+
+    footer {
+      margin-top: auto;
+      padding: 24px;
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <span class="logo">🖊️</span>
+  <h1>HandwritingAI</h1>
+  <p>local · private · offline</p>
+</header>
+
+<main>
+
+  <!-- Step 1: Write the prompt -->
+  <div class="card">
+    <h2><span class="step-badge">1</span> Write this paragraph</h2>
+    <p class="desc">
+      Print the text below on paper — use your natural handwriting, but write
+      each letter clearly (print, not cursive, for best font results).
+      Try to write on unlined white paper in good lighting.
+    </p>
+    <div class="prompt-box" id="promptBox">
+      <span class="line">The quick brown fox jumps over the lazy dog.</span>
+      <span class="line">Pack my box with five dozen liquor jugs.</span>
+      <span class="line">How vexingly quick daft zebras jump!</span>
+      <span class="line">0 1 2 3 4 5 6 7 8 9 &nbsp; ! ? . , ; : ' " ( ) - /</span>
+    </div>
+    <button class="copy-btn" onclick="copyPrompt()">📋 Copy text</button>
+    <div class="info-row" style="margin-top: 14px;">
+      <span class="info-pill">✏️ Print (not cursive) for best font results</span>
+      <span class="info-pill">💡 Good lighting, white paper</span>
+      <span class="info-pill">📸 2–3 photos recommended</span>
+    </div>
+  </div>
+
+  <!-- Step 2: Upload + choose mode -->
+  <div class="card">
+    <h2><span class="step-badge">2</span> Upload your photos</h2>
+    <p class="desc">
+      Photograph your writing and upload here. Multiple photos give better results.
+    </p>
+
+    <div class="upload-zone" id="uploadZone">
+      <input type="file" id="fileInput" accept="image/*" multiple />
+      <div class="icon">📁</div>
+      <p><strong>Click to select</strong> or drag &amp; drop images</p>
+      <p style="margin-top: 6px;">JPG, PNG, WEBP supported</p>
+    </div>
+    <div class="file-list" id="fileList"></div>
+  </div>
+
+  <!-- Step 3: Choose action -->
+  <div class="card">
+    <h2><span class="step-badge">3</span> Choose what to do</h2>
+    <p class="desc">Pick one or both — you can run them separately.</p>
+
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('transcribe', this)">📄 Read my handwriting</button>
+      <button class="tab" onclick="switchTab('font', this)">🔤 Generate my font</button>
+      <button class="tab" onclick="switchTab('finetune', this)">🧠 Fine-tune model</button>
+    </div>
+
+    <!-- Transcribe tab -->
+    <div class="tab-content active" id="tab-transcribe">
+      <p style="color: var(--muted); font-size: 0.875rem; margin-bottom: 16px;">
+        Transcribes the handwriting in your uploaded photos into editable text.
+        If you've fine-tuned the model on your writing, results will be much better.
+      </p>
+      <button class="btn btn-primary" id="transcribeBtn" onclick="runTranscribe()">
+        Run Transcription
+      </button>
+      <div class="status-bar" id="transcribeStatus"></div>
+      <div class="result-box" id="transcribeResult">
+        <div class="result-text" id="transcribeText"></div>
+        <div class="result-actions">
+          <button class="btn btn-secondary" onclick="copyResult()">📋 Copy text</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Font generation tab -->
+    <div class="tab-content" id="tab-font">
+      <p style="color: var(--muted); font-size: 0.875rem; margin-bottom: 16px;">
+        Segments each character from your writing, vectorizes it, and builds a
+        <code>.ttf</code> font file you can install on your computer.
+      </p>
+      <div class="font-name-row">
+        <label>Font name:</label>
+        <input type="text" id="fontName" value="MyHandwriting" maxlength="40" />
+      </div>
+      <button class="btn btn-primary" id="fontBtn" onclick="runFontGen()">
+        Generate Font
+      </button>
+      <div class="status-bar" id="fontStatus"></div>
+      <div class="result-box" id="fontResult"></div>
+    </div>
+
+    <!-- Fine-tune tab -->
+    <div class="tab-content" id="tab-finetune">
+      <p style="color: var(--muted); font-size: 0.875rem; margin-bottom: 16px;">
+        Fine-tunes the AI on <em>your specific</em> handwriting style using the
+        prompt paragraph as ground-truth labels. Run this once — it takes a few
+        minutes but dramatically improves transcription accuracy. Model is saved
+        locally.
+      </p>
+      <button class="btn btn-primary" id="finetuneBtn" onclick="runFineTune()">
+        Start Fine-Tuning
+      </button>
+      <div class="status-bar" id="finetuneStatus"></div>
+    </div>
+  </div>
+
+</main>
+
+<footer>HandwritingAI — runs entirely on your computer. No data leaves your machine.</footer>
+
+<script>
+  const API = "http://localhost:8000";
+  let selectedFiles = [];
+
+  // ── File upload ──────────────────────────────────────────────────────────────
+  const uploadZone = document.getElementById("uploadZone");
+  const fileInput = document.getElementById("fileInput");
+  const fileList = document.getElementById("fileList");
+
+  fileInput.addEventListener("change", () => handleFiles(fileInput.files));
+  uploadZone.addEventListener("dragover", e => { e.preventDefault(); uploadZone.classList.add("dragover"); });
+  uploadZone.addEventListener("dragleave", () => uploadZone.classList.remove("dragover"));
+  uploadZone.addEventListener("drop", e => {
+    e.preventDefault();
+    uploadZone.classList.remove("dragover");
+    handleFiles(e.dataTransfer.files);
+  });
+
+  function handleFiles(files) {
+    selectedFiles = Array.from(files);
+    fileList.innerHTML = "";
+    selectedFiles.forEach(f => {
+      const size = (f.size / 1024).toFixed(0) + " KB";
+      const div = document.createElement("div");
+      div.className = "file-item";
+      div.innerHTML = `<span>🖼️</span><span class="fname">${f.name}</span><span class="fsize">${size}</span>`;
+      fileList.appendChild(div);
+    });
+  }
+
+  // ── Tabs ─────────────────────────────────────────────────────────────────────
+  function switchTab(name, btn) {
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    document.querySelectorAll(".tab-content").forEach(t => t.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById("tab-" + name).classList.add("active");
+  }
+
+  // ── Copy prompt ───────────────────────────────────────────────────────────────
+  function copyPrompt() {
+    const text = document.getElementById("promptBox").innerText;
+    navigator.clipboard.writeText(text).then(() => alert("Prompt copied!"));
+  }
+
+  function copyResult() {
+    const text = document.getElementById("transcribeText").innerText;
+    navigator.clipboard.writeText(text).then(() => alert("Text copied!"));
+  }
+
+  // ── API helpers ───────────────────────────────────────────────────────────────
+  async function uploadAndRun(endpoint, statusId, onSuccess, extraFields = {}) {
+    if (selectedFiles.length === 0) {
+      alert("Please upload at least one photo first.");
+      return;
+    }
+
+    const statusEl = document.getElementById(statusId);
+    setStatus(statusEl, "processing", "Processing… this may take a few minutes.");
+
+    const form = new FormData();
+    selectedFiles.forEach(f => form.append("files", f));
+    Object.entries(extraFields).forEach(([k, v]) => form.append(k, v));
+
+    try {
+      const res = await fetch(`${API}/${endpoint}`, { method: "POST", body: form });
+      const { job_id } = await res.json();
+      pollJob(job_id, statusEl, onSuccess);
+    } catch (e) {
+      setStatus(statusEl, "error", `Error: ${e.message}. Is the server running?`);
+    }
+  }
+
+  async function pollJob(jobId, statusEl, onSuccess) {
+    const res = await fetch(`${API}/status/${jobId}`);
+    const job = await res.json();
+
+    if (job.status === "done") {
+      setStatus(statusEl, "done", "Done!");
+      onSuccess(job.result);
+    } else if (job.status === "error") {
+      setStatus(statusEl, "error", `Error: ${job.error}`);
+    } else {
+      setTimeout(() => pollJob(jobId, statusEl, onSuccess), 2000);
+    }
+  }
+
+  function setStatus(el, type, msg) {
+    el.className = "status-bar visible " + type;
+    el.innerHTML = type === "processing"
+      ? `<div class="spinner"></div><span>${msg}</span>`
+      : `<span>${msg}</span>`;
+  }
+
+  // ── Transcription ─────────────────────────────────────────────────────────────
+  function runTranscribe() {
+    document.getElementById("transcribeBtn").disabled = true;
+    uploadAndRun("transcribe", "transcribeStatus", result => {
+      const box = document.getElementById("transcribeResult");
+      const text = document.getElementById("transcribeText");
+      text.textContent = result;
+      box.classList.add("visible");
+      document.getElementById("transcribeBtn").disabled = false;
+    });
+  }
+
+  // ── Font generation ───────────────────────────────────────────────────────────
+  function runFontGen() {
+    const fontName = document.getElementById("fontName").value.trim() || "MyHandwriting";
+    document.getElementById("fontBtn").disabled = true;
+    uploadAndRun("generate-font", "fontStatus", result => {
+      const box = document.getElementById("fontResult");
+      box.classList.add("visible");
+      box.innerHTML = `
+        <a class="download-link" href="${API}${result}" download="${fontName}.ttf">
+          ⬇️ Download ${fontName}.ttf
+        </a>
+        <p style="color:var(--muted);font-size:0.8rem;margin-top:10px;">
+          Install the font on your system, then it'll appear in Word, Canva, etc.
+        </p>`;
+      document.getElementById("fontBtn").disabled = false;
+    }, { font_name: fontName });
+  }
+
+  // ── Fine-tuning ───────────────────────────────────────────────────────────────
+  function runFineTune() {
+    document.getElementById("finetuneBtn").disabled = true;
+    uploadAndRun("fine-tune", "finetuneStatus", result => {
+      const el = document.getElementById("finetuneStatus");
+      setStatus(el, "done", result + " Re-run transcription for improved results.");
+      document.getElementById("finetuneBtn").disabled = false;
+    });
+  }
+</script>
+
+</body>
+</html>

@@ -1,0 +1,24 @@
+# HandwritingAI — Python dependencies
+# Install with: pip install -r requirements.txt
+
+# Web server
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+
+# Computer vision
+opencv-python>=4.9.0
+Pillow>=10.0.0
+numpy>=1.26.0
+
+# Machine learning / HTR
+torch>=2.2.0
+transformers>=4.40.0
+datasets>=2.19.0
+accelerate>=0.29.0
+
+# Font building
+fonttools>=4.50.0
+
+# Misc utilities
+pypotrace>=0.3   # Python bindings for potrace (optional — falls back to CLI)

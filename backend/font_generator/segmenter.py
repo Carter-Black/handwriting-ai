@@ -1,31 +1,15 @@
-"""
-Character Segmentation
-
-Takes a preprocessed (binarized) handwriting image and extracts individual
-character images, labelled by their character value.
-
-Strategy:
-  1. Detect text lines via horizontal projection.
-  2. Within each line, detect characters via vertical projection (works well
-     for printed handwriting — a v2 could tackle connected cursive).
-  3. Return a dict mapping character → best-quality binary image crop.
-
-NOTE: This requires the user to have written the PROMPT_PARAGRAPH in print
-      (not cursive), which is clearly communicated in the UI.
-"""
+# segmenter.py
+# extracts individual character images from a preprocessed handwriting page
+# works best with printed (not cursive) handwriting
 
 from __future__ import annotations
 
 import string
-from pathlib import Path
 
 import cv2
 import numpy as np
-from PIL import Image
 
-
-# The characters we expect to be present in the prompt paragraph, in order.
-# We use this to label the segmented characters automatically.
+# the paragraph we ask users to write — defines the expected character sequence
 PROMPT_CHARS = (
     "The quick brown fox jumps over the lazy dog. "
     "Pack my box with five dozen liquor jugs. "
@@ -33,7 +17,6 @@ PROMPT_CHARS = (
     "0123456789!?,;:'\"()-/"
 )
 
-# Characters we actually care about building glyphs for
 TARGET_CHARS = (
     string.ascii_lowercase
     + string.ascii_uppercase
@@ -42,162 +25,120 @@ TARGET_CHARS = (
 )
 
 
-def segment_characters(
-    image: np.ndarray,
-) -> dict[str, np.ndarray]:
+def segment_characters(image: np.ndarray) -> dict[str, np.ndarray]:
     """
-    Segment characters from a binarized handwriting image.
-
-    Returns:
-        dict mapping character string → binary numpy image (uint8, 0/255)
-        Only characters found in TARGET_CHARS are included.
-        If a character appears multiple times, we keep the clearest crop
-        (largest bounding box area as a proxy for quality).
+    Extract character crops from a binarized handwriting image.
+    Returns {char: binary_image} using the known prompt sequence as labels.
+    When a character appears multiple times, we keep the largest (clearest) crop.
     """
-    # Invert: text = white on black for connected component analysis
-    if _is_mostly_white(image):
-        inv = cv2.bitwise_not(image)
-    else:
-        inv = image.copy()
+    inv = cv2.bitwise_not(image) if _mostly_white(image) else image.copy()
 
     lines = _extract_lines(inv)
-    char_images: dict[str, list[np.ndarray]] = {}
+    collected: dict[str, list[np.ndarray]] = {}
+    prompt_chars = [c for c in PROMPT_CHARS]
+    prompt_idx = 0
 
-    prompt_index = 0
-    prompt_text = [c for c in PROMPT_CHARS]
-
-    for line_img in lines:
-        chars_in_line = _extract_chars_from_line(line_img)
-        for char_img in chars_in_line:
-            # Advance through prompt to find next non-space character
-            while prompt_index < len(prompt_text) and prompt_text[prompt_index] == " ":
-                prompt_index += 1
-            if prompt_index >= len(prompt_text):
+    for line in lines:
+        chars = _chars_from_line(line)
+        for crop in chars:
+            # skip spaces in the prompt sequence
+            while prompt_idx < len(prompt_chars) and prompt_chars[prompt_idx] == " ":
+                prompt_idx += 1
+            if prompt_idx >= len(prompt_chars):
                 break
-            label = prompt_text[prompt_index]
-            prompt_index += 1
-
+            label = prompt_chars[prompt_idx]
+            prompt_idx += 1
             if label in TARGET_CHARS:
-                char_images.setdefault(label, []).append(char_img)
+                collected.setdefault(label, []).append(crop)
 
-    # For each character, pick the best crop (largest area = most ink detail)
-    best: dict[str, np.ndarray] = {}
-    for char, crops in char_images.items():
-        best[char] = max(crops, key=lambda c: c.shape[0] * c.shape[1])
-
-    return best
+    # keep the largest crop per character — bigger usually means more detail
+    return {ch: max(crops, key=lambda c: c.shape[0] * c.shape[1]) for ch, crops in collected.items()}
 
 
-# ── Internal helpers ───────────────────────────────────────────────────────────
+# line detection
 
-def _is_mostly_white(img: np.ndarray) -> bool:
-    """True if image is light background (standard binarized output)."""
+def _mostly_white(img: np.ndarray) -> bool:
     return np.mean(img) > 127
 
 
 def _extract_lines(inv: np.ndarray) -> list[np.ndarray]:
-    """Split inverted image into line strips via horizontal projection."""
-    h_proj = np.sum(inv, axis=1)
-    gap_threshold = h_proj.max() * 0.03
+    """Split inverted image into horizontal line strips."""
+    proj = np.sum(inv, axis=1)
+    gap_thresh = proj.max() * 0.03
 
     in_line = False
     starts, ends = [], []
-    for i, val in enumerate(h_proj):
-        if not in_line and val > gap_threshold:
+    for i, v in enumerate(proj):
+        if not in_line and v > gap_thresh:
             in_line = True
             starts.append(i)
-        elif in_line and val <= gap_threshold:
+        elif in_line and v <= gap_thresh:
             in_line = False
             ends.append(i)
     if in_line:
         ends.append(inv.shape[0])
 
-    lines = []
     pad = 4
-    for top, bot in zip(starts, ends):
-        strip = inv[max(0, top - pad) : min(inv.shape[0], bot + pad), :]
-        if strip.shape[0] > 5:
-            lines.append(strip)
+    return [
+        inv[max(0, t - pad):min(inv.shape[0], b + pad), :]
+        for t, b in zip(starts, ends)
+        if b - t > 5
+    ]
 
-    return lines
 
+# character detection within a line
 
-def _extract_chars_from_line(line_inv: np.ndarray) -> list[np.ndarray]:
-    """
-    Split a line strip into individual character crops via vertical projection
-    and connected component analysis.
-    """
-    # Connected components (more robust than pure projection for printed text)
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
-        line_inv, connectivity=8
-    )
+def _chars_from_line(line: np.ndarray) -> list[np.ndarray]:
+    """Segment individual character crops from a line strip."""
+    num, labels, stats, _ = cv2.connectedComponentsWithStats(line, connectivity=8)
+    h = line.shape[0]
 
-    line_h = line_inv.shape[0]
-    char_crops = []
-
-    # Collect bounding boxes, filter noise
     boxes = []
-    for i in range(1, num_labels):  # skip background label 0
-        x, y, w, h, area = stats[i]
-        # Heuristics to filter punctuation dots from 'i', 'j' etc.
-        # and outright noise
-        if area < 20:
+    for i in range(1, num):  # skip background (label 0)
+        x, y, w, bh, area = stats[i]
+        if area < 20 or bh < h * 0.1:  # filter noise and tiny specks
             continue
-        if h < line_h * 0.1:
-            continue
-        boxes.append((x, y, w, h))
+        boxes.append((x, y, w, bh))
 
-    # Sort left-to-right
-    boxes.sort(key=lambda b: b[0])
-
-    # Merge overlapping/adjacent boxes (handles letters like 'i' with a dot)
-    merged = _merge_close_boxes(boxes, gap_threshold=line_inv.shape[1] * 0.01)
+    boxes.sort(key=lambda b: b[0])  # left to right
+    merged = _merge_boxes(boxes, gap=line.shape[1] * 0.01)
 
     pad = 3
-    for (x, y, w, h) in merged:
+    crops = []
+    for x, y, w, bh in merged:
         x1 = max(0, x - pad)
         y1 = max(0, y - pad)
-        x2 = min(line_inv.shape[1], x + w + pad)
-        y2 = min(line_inv.shape[0], y + h + pad)
-        crop = line_inv[y1:y2, x1:x2]
-        # Normalize to a square with padding
-        crop = _pad_to_square(crop)
-        char_crops.append(crop)
-
-    return char_crops
+        x2 = min(line.shape[1], x + w + pad)
+        y2 = min(line.shape[0], y + bh + pad)
+        crops.append(_to_square(line[y1:y2, x1:x2]))
+    return crops
 
 
-def _merge_close_boxes(
-    boxes: list[tuple[int, int, int, int]], gap_threshold: float
-) -> list[tuple[int, int, int, int]]:
-    """Merge horizontally close bounding boxes (e.g. 'i' dot + stem)."""
+def _merge_boxes(boxes: list[tuple], gap: float) -> list[tuple]:
+    """Merge horizontally adjacent boxes (e.g. dot above 'i' + stem)."""
     if not boxes:
         return []
     merged = [list(boxes[0])]
     for x, y, w, h in boxes[1:]:
         prev = merged[-1]
-        prev_right = prev[0] + prev[2]
-        if x - prev_right <= gap_threshold:
-            # Merge
+        if x - (prev[0] + prev[2]) <= gap:
             new_x = prev[0]
             new_y = min(prev[1], y)
-            new_right = max(prev_right, x + w)
-            new_bottom = max(prev[1] + prev[3], y + h)
-            merged[-1] = [new_x, new_y, new_right - new_x, new_bottom - new_y]
+            new_r = max(prev[0] + prev[2], x + w)
+            new_b = max(prev[1] + prev[3], y + h)
+            merged[-1] = [new_x, new_y, new_r - new_x, new_b - new_y]
         else:
             merged.append([x, y, w, h])
     return [tuple(b) for b in merged]
 
 
-def _pad_to_square(img: np.ndarray, size: int = 64) -> np.ndarray:
-    """Resize and pad a character crop to a fixed square."""
+def _to_square(img: np.ndarray, size: int = 64) -> np.ndarray:
+    """Resize and center a character crop onto a fixed square canvas."""
     h, w = img.shape
     scale = (size - 8) / max(h, w)
-    new_h = max(1, int(h * scale))
-    new_w = max(1, int(w * scale))
-    resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    nh, nw = max(1, int(h * scale)), max(1, int(w * scale))
+    resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
     canvas = np.zeros((size, size), dtype=np.uint8)
-    y_off = (size - new_h) // 2
-    x_off = (size - new_w) // 2
-    canvas[y_off : y_off + new_h, x_off : x_off + new_w] = resized
+    yo, xo = (size - nh) // 2, (size - nw) // 2
+    canvas[yo:yo + nh, xo:xo + nw] = resized
     return canvas

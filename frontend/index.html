@@ -458,6 +458,36 @@
       div.innerHTML = `<span>🖼️</span><span class="fname">${f.name}</span><span class="fsize">${size}</span>`;
       fileList.appendChild(div);
     });
+    // Run quality checks by uploading and getting feedback
+    if (selectedFiles.length > 0) _checkQuality();
+  }
+
+  async function _checkQuality() {
+    const form = new FormData();
+    selectedFiles.forEach(f => form.append("files", f));
+    try {
+      const res = await fetch(`${API}/upload`, { method: "POST", body: form });
+      const data = await res.json();
+      // Annotate each file item with quality feedback
+      const items = fileList.querySelectorAll(".file-item");
+      data.results.forEach((r, i) => {
+        if (!items[i]) return;
+        if (!r.ok) {
+          items[i].style.borderLeft = "3px solid var(--error)";
+          items[i].title = r.errors.join("\n");
+          items[i].innerHTML += `<span style="color:var(--error);font-size:0.75rem;">⚠ ${r.errors[0]}</span>`;
+        } else if (r.warnings.length > 0) {
+          items[i].style.borderLeft = "3px solid var(--warning)";
+          items[i].title = r.warnings.join("\n");
+          items[i].innerHTML += `<span style="color:var(--warning);font-size:0.75rem;">⚠ ${r.warnings[0]}</span>`;
+        } else {
+          items[i].style.borderLeft = "3px solid var(--success)";
+          items[i].innerHTML += `<span style="color:var(--success);font-size:0.75rem;">✓</span>`;
+        }
+      });
+    } catch (e) {
+      // Server not running yet — silently skip quality check
+    }
   }
 
   // ── Tabs ─────────────────────────────────────────────────────────────────────
@@ -512,7 +542,10 @@
     } else if (job.status === "error") {
       setStatus(statusEl, "error", `Error: ${job.error}`);
     } else {
-      setTimeout(() => pollJob(jobId, statusEl, onSuccess), 2000);
+      // Show live progress text if available
+      const msg = job.progress || "Processing… this may take a few minutes.";
+      setStatus(statusEl, "processing", msg);
+      setTimeout(() => pollJob(jobId, statusEl, onSuccess), 1500);
     }
   }
 

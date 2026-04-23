@@ -1,24 +1,16 @@
-"""
-Handwriting Recognition model — wraps Microsoft TrOCR.
-
-Two modes:
-  1. Out-of-the-box transcription using the pretrained model.
-  2. Fine-tuning the last few transformer layers on the user's own samples,
-     using the known prompt paragraph as ground-truth labels (self-supervised).
-
-The fine-tuned model weights are saved locally so training only happens once.
-"""
+# model.py
+# TrOCR wrapper with optional fine-tuning on the user's own handwriting
 
 from __future__ import annotations
 
-import os
-import re
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
+import cv2
 import numpy as np
 import torch
 from PIL import Image
+from torch.utils.data import Dataset
 from transformers import (
     TrOCRProcessor,
     VisionEncoderDecoderModel,
@@ -26,57 +18,55 @@ from transformers import (
     Seq2SeqTrainingArguments,
     default_data_collator,
 )
-from torch.utils.data import Dataset
 
-from recognizer.preprocess import preprocess_for_model, preprocess_image, crop_to_text
-import cv2
+from recognizer.preprocess import preprocess_for_model
 
 MODEL_NAME = "microsoft/trocr-base-handwritten"
 FINE_TUNED_DIR = "fine_tuned_trocr"
 
+# beam search gives meaningfully better results than greedy for handwriting
+GENERATE_KWARGS = {
+    "max_new_tokens": 128,
+    "num_beams": 4,
+    "early_stopping": True,
+    "no_repeat_ngram_size": 3,
+}
+
 
 class HandwritingRecognizer:
-    """
-    Wraps TrOCR for local handwriting recognition.
-
-    Usage:
-        r = HandwritingRecognizer(model_dir="/path/to/storage/models")
-        text = r.transcribe(pil_image_or_numpy_array)
-        r.fine_tune(["/path/to/sample1.jpg", ...], ground_truth="The quick...")
-    """
-
     def __init__(self, model_dir: str):
         self.model_dir = Path(model_dir)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.processor: Optional[TrOCRProcessor] = None
         self.model: Optional[VisionEncoderDecoderModel] = None
-        self._load_model()
+        self._load()
 
-    # ── Public API ─────────────────────────────────────────────────────────────
-
-    def transcribe(self, image: np.ndarray | Image.Image) -> str:
+    def transcribe(
+        self,
+        image: np.ndarray | Image.Image,
+        progress_cb: Optional[Callable[[int, int], None]] = None,
+    ) -> str:
         """
-        Transcribe handwriting from an image.
-        Accepts either a numpy array (grayscale or RGB) or a PIL Image.
+        Transcribe handwriting from an image. Splits into lines internally.
+        progress_cb(current_line, total_lines) is called if provided.
         """
-        pil_img = self._ensure_pil_rgb(image)
-        lines = self._split_into_lines(pil_img)
+        pil = self._to_pil(image)
+        lines = self._split_lines(pil)
+        total = len(lines)
+        out = []
 
-        transcribed_lines = []
-        for line_img in lines:
-            pixel_values = self.processor(
-                images=line_img, return_tensors="pt"
-            ).pixel_values.to(self.device)
+        for i, line in enumerate(lines):
+            if progress_cb:
+                progress_cb(i, total)
 
+            px = self.processor(images=line, return_tensors="pt").pixel_values.to(self.device)
             with torch.no_grad():
-                generated_ids = self.model.generate(pixel_values)
+                ids = self.model.generate(px, **GENERATE_KWARGS)
+            out.append(self.processor.batch_decode(ids, skip_special_tokens=True)[0].strip())
 
-            text = self.processor.batch_decode(
-                generated_ids, skip_special_tokens=True
-            )[0]
-            transcribed_lines.append(text.strip())
-
-        return "\n".join(transcribed_lines)
+        if progress_cb:
+            progress_cb(total, total)
+        return "\n".join(out)
 
     def fine_tune(
         self,
@@ -86,37 +76,31 @@ class HandwritingRecognizer:
         learning_rate: float = 5e-5,
     ):
         """
-        Fine-tune TrOCR on the user's handwriting samples.
-
-        We use the known prompt paragraph as the label for the full image.
-        For multi-line images, we line-segment and assign label portions
-        heuristically (best-effort for a local, no-annotation approach).
-
-        Saves the fine-tuned model to model_dir/fine_tuned_trocr/.
+        Fine-tune TrOCR on the user's samples.
+        Uses the known prompt paragraph as ground-truth labels (self-supervised).
+        Saves the fine-tuned model locally so it only needs to run once.
         """
-        print("Preparing fine-tuning dataset...")
+        print("Building fine-tune dataset...")
         pairs: list[tuple[Image.Image, str]] = []
 
         for path in image_paths:
             pil = preprocess_for_model(path)
-            lines = self._split_into_lines(pil)
-            gt_lines = self._split_ground_truth(ground_truth, len(lines))
-            for img_line, gt_line in zip(lines, gt_lines):
-                if gt_line.strip():
-                    pairs.append((img_line, gt_line))
+            lines = self._split_lines(pil)
+            labels = _split_text(ground_truth, len(lines))
+            for img_line, label in zip(lines, labels):
+                if label.strip():
+                    pairs.append((img_line, label))
 
         if not pairs:
-            raise ValueError("No valid image/label pairs could be prepared.")
+            raise ValueError("No usable image/label pairs found.")
 
-        dataset = _HandwritingDataset(pairs, self.processor)
+        # freeze encoder — only update decoder layers
+        for p in self.model.encoder.parameters():
+            p.requires_grad = False
 
-        # Only fine-tune the decoder — freeze the encoder vision backbone
-        for param in self.model.encoder.parameters():
-            param.requires_grad = False
-
-        output_dir = str(self.model_dir / FINE_TUNED_DIR)
-        training_args = Seq2SeqTrainingArguments(
-            output_dir=output_dir,
+        out_dir = str(self.model_dir / FINE_TUNED_DIR)
+        args = Seq2SeqTrainingArguments(
+            output_dir=out_dir,
             num_train_epochs=epochs,
             per_device_train_batch_size=2,
             learning_rate=learning_rate,
@@ -128,115 +112,70 @@ class HandwritingRecognizer:
             dataloader_num_workers=0,
             report_to="none",
         )
-
         trainer = Seq2SeqTrainer(
             model=self.model,
-            args=training_args,
-            train_dataset=dataset,
+            args=args,
+            train_dataset=_HTRDataset(pairs, self.processor),
             data_collator=default_data_collator,
         )
 
         print(f"Fine-tuning on {len(pairs)} line pairs for {epochs} epoch(s)...")
         trainer.train()
+        self.model.save_pretrained(out_dir)
+        self.processor.save_pretrained(out_dir)
+        print(f"Saved fine-tuned model → {out_dir}")
 
-        self.model.save_pretrained(output_dir)
-        self.processor.save_pretrained(output_dir)
-        print(f"Fine-tuned model saved to {output_dir}")
+        for p in self.model.parameters():
+            p.requires_grad = True
 
-        # Re-enable all params after training
-        for param in self.model.parameters():
-            param.requires_grad = True
+    # internal
 
-    # ── Internal helpers ───────────────────────────────────────────────────────
-
-    def _load_model(self):
-        """Load fine-tuned model if available, otherwise load pretrained."""
+    def _load(self):
         fine_tuned = self.model_dir / FINE_TUNED_DIR
-        source = str(fine_tuned) if fine_tuned.exists() else MODEL_NAME
-
-        print(f"Loading TrOCR from: {source}")
-        self.processor = TrOCRProcessor.from_pretrained(source)
-        self.model = VisionEncoderDecoderModel.from_pretrained(source)
-        self.model.to(self.device)
-        self.model.eval()
+        src = str(fine_tuned) if fine_tuned.exists() else MODEL_NAME
+        print(f"Loading TrOCR from: {src}")
+        self.processor = TrOCRProcessor.from_pretrained(src)
+        self.model = VisionEncoderDecoderModel.from_pretrained(src)
+        self.model.to(self.device).eval()
         print("Model ready.")
 
-    def _ensure_pil_rgb(self, image: np.ndarray | Image.Image) -> Image.Image:
+    def _to_pil(self, image: np.ndarray | Image.Image) -> Image.Image:
         if isinstance(image, Image.Image):
             return image.convert("RGB")
-        if len(image.shape) == 2:
-            # Grayscale → RGB
-            rgb = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-        else:
-            rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        return Image.fromarray(rgb)
+        arr = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB if len(image.shape) == 2 else cv2.COLOR_BGR2RGB)
+        return Image.fromarray(arr)
 
-    def _split_into_lines(self, pil_img: Image.Image) -> list[Image.Image]:
-        """
-        Split a full-page handwriting image into individual line images.
-        Uses horizontal projection profile on the binarized image.
-        """
-        arr = np.array(pil_img.convert("L"))
-        _, binary = cv2.threshold(arr, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    def _split_lines(self, pil: Image.Image) -> list[Image.Image]:
+        """Split a full-page image into line strips via horizontal projection."""
+        gray = np.array(pil.convert("L"))
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        proj = np.sum(binary, axis=1)
+        thresh = proj.max() * 0.05
 
-        # Horizontal projection: sum of white pixels per row
-        h_proj = np.sum(binary, axis=1)
-        threshold = h_proj.max() * 0.05  # rows with < 5% of max are "gaps"
-
-        in_line = False
-        line_starts = []
-        line_ends = []
-
-        for i, val in enumerate(h_proj):
-            if not in_line and val > threshold:
+        starts, ends, in_line = [], [], False
+        for i, v in enumerate(proj):
+            if not in_line and v > thresh:
                 in_line = True
-                line_starts.append(i)
-            elif in_line and val <= threshold:
+                starts.append(i)
+            elif in_line and v <= thresh:
                 in_line = False
-                line_ends.append(i)
-
+                ends.append(i)
         if in_line:
-            line_ends.append(len(h_proj))
+            ends.append(len(proj))
 
-        if not line_starts:
-            return [pil_img]  # Couldn't split — return whole image
+        if not starts:
+            return [pil]
 
+        pad, w = 5, pil.width
         lines = []
-        padding = 5
-        w = pil_img.width
-        for top, bottom in zip(line_starts, line_ends):
-            top = max(0, top - padding)
-            bottom = min(pil_img.height, bottom + padding)
-            line_crop = pil_img.crop((0, top, w, bottom))
-            lines.append(line_crop)
-
+        for top, bot in zip(starts, ends):
+            lines.append(pil.crop((0, max(0, top - pad), w, min(pil.height, bot + pad))))
         return lines
 
-    @staticmethod
-    def _split_ground_truth(text: str, n_lines: int) -> list[str]:
-        """
-        Split the ground-truth paragraph into approximately n_lines chunks.
-        Simple word-based split — good enough for few-shot fine-tuning.
-        """
-        words = text.split()
-        if n_lines <= 1:
-            return [text]
-        chunk_size = max(1, len(words) // n_lines)
-        chunks = []
-        for i in range(0, len(words), chunk_size):
-            chunks.append(" ".join(words[i : i + chunk_size]))
-        # If we have more chunks than lines, merge the last ones
-        while len(chunks) > n_lines:
-            chunks[-2] = chunks[-2] + " " + chunks[-1]
-            chunks.pop()
-        return chunks
 
+# dataset for fine-tuning
 
-# ── Dataset ────────────────────────────────────────────────────────────────────
-
-class _HandwritingDataset(Dataset):
-    """Simple dataset of (image, label) pairs for Seq2SeqTrainer."""
-
+class _HTRDataset(Dataset):
     def __init__(self, pairs: list[tuple[Image.Image, str]], processor: TrOCRProcessor):
         self.pairs = pairs
         self.processor = processor
@@ -246,20 +185,26 @@ class _HandwritingDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict:
         image, label = self.pairs[idx]
-        pixel_values = self.processor(
-            images=image, return_tensors="pt"
-        ).pixel_values.squeeze(0)
+        px = self.processor(images=image, return_tensors="pt").pixel_values.squeeze(0)
 
-        with self.processor.tokenizer as tok:
-            labels = tok(
-                label,
-                padding="max_length",
-                max_length=128,
-                truncation=True,
-                return_tensors="pt",
-            ).input_ids.squeeze(0)
+        tok = self.processor.tokenizer
+        ids = tok(label, padding="max_length", max_length=128,
+                  truncation=True, return_tensors="pt").input_ids.squeeze(0)
+        ids[ids == tok.pad_token_id] = -100  # ignore padding in loss
 
-        # Replace padding token id with -100 so loss ignores them
-        labels[labels == self.processor.tokenizer.pad_token_id] = -100
+        return {"pixel_values": px, "labels": ids}
 
-        return {"pixel_values": pixel_values, "labels": labels}
+
+# helpers
+
+def _split_text(text: str, n: int) -> list[str]:
+    """Split ground-truth text into ~n roughly equal chunks by word count."""
+    words = text.split()
+    if n <= 1:
+        return [text]
+    size = max(1, len(words) // n)
+    chunks = [" ".join(words[i:i + size]) for i in range(0, len(words), size)]
+    while len(chunks) > n:
+        chunks[-2] = chunks[-2] + " " + chunks[-1]
+        chunks.pop()
+    return chunks

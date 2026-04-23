@@ -1,99 +1,119 @@
 #!/usr/bin/env bash
-# ─────────────────────────────────────────────────────────────────────────────
-# HandwritingAI — macOS / Linux installer
-# ─────────────────────────────────────────────────────────────────────────────
+# HandwritingAI installer — macOS and Linux
 set -e
 
-PYTHON_MIN="3.10"
 VENV_DIR=".venv"
 
 echo ""
-echo "🖊️  HandwritingAI Installer"
-echo "────────────────────────────"
+echo " HandwritingAI Installer"
+echo " ------------------------"
 echo ""
 
-# ── Check Python ──────────────────────────────────────────────────────────────
+# python
 if ! command -v python3 &>/dev/null; then
-  echo "❌  Python 3 is not installed."
-  echo "    Please install Python $PYTHON_MIN+ from https://python.org and re-run this script."
-  exit 1
+    echo "[ERROR] Python 3 is not installed."
+    echo "        Install from https://python.org and re-run this script."
+    exit 1
 fi
 
 PY_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-echo "✅  Python $PY_VERSION found."
+MAJOR=$(python3 -c "import sys; print(sys.version_info.major)")
+MINOR=$(python3 -c "import sys; print(sys.version_info.minor)")
 
-# ── Install potrace ───────────────────────────────────────────────────────────
+if [ "$MAJOR" -lt 3 ] || ([ "$MAJOR" -eq 3 ] && [ "$MINOR" -lt 10 ]); then
+    echo "[ERROR] Python 3.10+ required. Found $PY_VERSION."
+    echo "        Update Python at https://python.org and re-run."
+    exit 1
+fi
+echo "[OK] Python $PY_VERSION found."
+
+# potrace
 echo ""
-echo "Checking for potrace (bitmap → vector tracer)..."
+echo "Checking for potrace..."
 
 if command -v potrace &>/dev/null; then
-  echo "✅  potrace already installed."
+    echo "[OK] potrace already installed."
 else
-  echo "Installing potrace..."
-  if command -v brew &>/dev/null; then
-    brew install potrace
-  elif command -v apt-get &>/dev/null; then
-    sudo apt-get update -qq && sudo apt-get install -y potrace
-  elif command -v dnf &>/dev/null; then
-    sudo dnf install -y potrace
-  else
-    echo "⚠️   Could not auto-install potrace. Please install it manually:"
-    echo "    macOS:  brew install potrace"
-    echo "    Ubuntu: sudo apt install potrace"
-    echo "    Then re-run this script."
-    exit 1
-  fi
-  echo "✅  potrace installed."
+    echo "potrace not found — attempting auto-install..."
+    INSTALLED=false
+
+    if command -v brew &>/dev/null; then
+        echo "Trying Homebrew..."
+        brew install potrace && INSTALLED=true
+    fi
+
+    if [ "$INSTALLED" = false ] && command -v apt-get &>/dev/null; then
+        echo "Trying apt..."
+        sudo apt-get update -qq && sudo apt-get install -y potrace && INSTALLED=true
+    fi
+
+    if [ "$INSTALLED" = false ] && command -v dnf &>/dev/null; then
+        echo "Trying dnf..."
+        sudo dnf install -y potrace && INSTALLED=true
+    fi
+
+    if [ "$INSTALLED" = false ] && command -v pacman &>/dev/null; then
+        echo "Trying pacman..."
+        sudo pacman -S --noconfirm potrace && INSTALLED=true
+    fi
+
+    if [ "$INSTALLED" = false ]; then
+        echo ""
+        echo "[ERROR] Could not auto-install potrace."
+        echo ""
+        echo "  Install it manually, then re-run this script:"
+        echo "    macOS:  brew install potrace"
+        echo "    Ubuntu: sudo apt install potrace"
+        echo "    Fedora: sudo dnf install potrace"
+        exit 1
+    fi
+
+    echo "[OK] potrace installed."
 fi
 
-# ── Create virtual environment ────────────────────────────────────────────────
+# virtual environment
 echo ""
-echo "Creating Python virtual environment..."
+echo "Setting up Python environment..."
 python3 -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
-echo "✅  Virtual environment ready."
+echo "[OK] Virtual environment ready."
 
-# ── Install Python packages ───────────────────────────────────────────────────
+# packages
 echo ""
-echo "Installing Python packages (this may take a few minutes on first run)..."
+echo "Installing Python packages (this may take a few minutes)..."
 pip install --upgrade pip --quiet
-pip install -r requirements.txt --quiet
-echo "✅  Python packages installed."
+pip install -r requirements.txt
+echo "[OK] Packages installed."
 
-# ── Download TrOCR model ──────────────────────────────────────────────────────
+# download model
 echo ""
-echo "Pre-downloading TrOCR model (~300 MB, one-time download)..."
+echo "Downloading TrOCR model (~300 MB, one-time only)..."
 python3 -c "
 from transformers import TrOCRProcessor, VisionEncoderDecoderModel
-print('  Downloading TrOCR processor...')
 TrOCRProcessor.from_pretrained('microsoft/trocr-base-handwritten')
-print('  Downloading TrOCR model...')
 VisionEncoderDecoderModel.from_pretrained('microsoft/trocr-base-handwritten')
-print('  Done.')
-"
-echo "✅  TrOCR model cached."
+print('[OK] Model downloaded.')
+" || echo "[WARN] Model download failed. Re-run this script when you have internet access."
 
-# ── Create run script ─────────────────────────────────────────────────────────
-cat > run.sh <<'RUN'
+# create run script
+cat > run.sh <<'EOF'
 #!/usr/bin/env bash
 cd "$(dirname "$0")"
 source .venv/bin/activate
 echo ""
-echo "🖊️  Starting HandwritingAI..."
-echo "   Open your browser at: http://localhost:8000"
-echo "   Press Ctrl+C to stop."
+echo " HandwritingAI is starting..."
+echo " Open your browser at: http://localhost:8000"
+echo " Press Ctrl+C to stop."
 echo ""
 cd backend
 python main.py
-RUN
+EOF
 chmod +x run.sh
 
 echo ""
-echo "────────────────────────────────────"
-echo "✅  Installation complete!"
+echo " --------------------------------"
+echo " [OK] Installation complete!"
 echo ""
-echo "To start the app, run:"
-echo "   ./run.sh"
-echo ""
-echo "Then open your browser at: http://localhost:8000"
+echo " Start the app:  ./run.sh"
+echo " Then open:      http://localhost:8000"
 echo ""

@@ -150,17 +150,24 @@ if !errorlevel! neq 0 (
 )
 
 :: ── Create run.bat ────────────────────────────────────────────────────────────
+:: Use the venv's python.exe directly via absolute path — avoids the Windows
+:: Store python stub and the "cd backend" working-directory guessing game.
 (
 echo @echo off
-echo cd /d "%%~dp0"
-echo call .venv\Scripts\activate.bat
+echo set "ROOT=%%~dp0"
+echo set "ROOT=%%ROOT:~0,-1%%"
+echo set "PYTHON=%%ROOT%%\.venv\Scripts\python.exe"
+echo if not exist "%%PYTHON%%" ^(
+echo     echo [ERROR] Virtual environment not found. Please re-run install.bat.
+echo     pause
+echo     exit /b 1
+echo ^)
 echo echo.
 echo echo  HandwritingAI is starting...
 echo echo  Open your browser at: http://localhost:8000
 echo echo  Press Ctrl+C to stop.
 echo echo.
-echo cd backend
-echo python main.py
+echo "%%PYTHON%%" "%%ROOT%%\backend\main.py"
 echo pause
 ) > run.bat
 

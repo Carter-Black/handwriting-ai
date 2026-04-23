@@ -1,5 +1,4 @@
 @echo off
-chcp 65001 >nul 2>&1
 setlocal EnableDelayedExpansion
 
 echo.
@@ -7,9 +6,9 @@ echo  HandwritingAI Installer
 echo  ------------------------
 echo.
 
-:: ── Python ────────────────────────────────────────────────────────────────────
-:: Try the Python Launcher first (py.exe), then plain python
-:: We also verify it actually runs — avoids the Windows Store stub issue
+:: Python
+:: try the Python Launcher first (py.exe), then plain python
+:: also verify it actually runs to avoid the Windows Store stub issue
 
 set PY_CMD=
 for %%c in (py python python3) do (
@@ -39,7 +38,7 @@ if "!PY_CMD!"=="" (
 for /f "tokens=*" %%v in ('!PY_CMD! -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"') do set PY_VER=%%v
 echo [OK] Python %PY_VER% found (using: %PY_CMD%)
 
-:: ── potrace ───────────────────────────────────────────────────────────────────
+:: potrace
 echo.
 echo Checking for potrace...
 
@@ -49,7 +48,7 @@ if !errorlevel! == 0 (
     goto :potrace_done
 )
 
-echo potrace not found — attempting automatic install...
+echo potrace not found. Attempting automatic install...
 echo.
 
 :: try winget (built into Windows 10 1709+ and Windows 11)
@@ -93,7 +92,7 @@ if !errorlevel! == 0 (
     )
 )
 
-:: all auto-install attempts failed — give clear manual instructions
+:: all auto-install attempts failed; give clear manual instructions
 echo.
 echo [WARN] Could not auto-install potrace.
 echo.
@@ -110,7 +109,7 @@ exit /b 1
 
 :potrace_done
 
-:: ── Virtual environment ───────────────────────────────────────────────────────
+:: virtual environment
 echo.
 echo Setting up Python environment...
 
@@ -126,7 +125,7 @@ if not exist ".venv" (
 call .venv\Scripts\activate.bat
 echo [OK] Virtual environment ready.
 
-:: ── Python packages ───────────────────────────────────────────────────────────
+:: python packages
 echo.
 echo Installing Python packages (this may take a few minutes)...
 
@@ -139,7 +138,7 @@ if !errorlevel! neq 0 (
 )
 echo [OK] Packages installed.
 
-:: ── Download TrOCR model ──────────────────────────────────────────────────────
+:: download TrOCR model
 echo.
 echo Downloading TrOCR model (~300 MB, one-time only)...
 
@@ -149,8 +148,8 @@ if !errorlevel! neq 0 (
     echo        You can retry by running install.bat again.
 )
 
-:: ── Create run.bat ────────────────────────────────────────────────────────────
-:: Use the venv's python.exe directly via absolute path — avoids the Windows
+:: create run.bat
+:: use the venv's python.exe directly via absolute path; avoids the Windows
 :: Store python stub and the "cd backend" working-directory guessing game.
 (
 echo @echo off

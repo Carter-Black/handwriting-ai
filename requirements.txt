@@ -18,8 +18,7 @@ datasets>=2.19.0
 accelerate>=0.29.0
 
 # Font building
+# potrace is invoked as a CLI binary via subprocess (see vectorizer.py),
+# so no Python bindings for potrace are required here.
 fonttools>=4.50.0
-cu2qu>=1.6.6     # cubic → quadratic bezier conversion for TTF fonts
-
-# Misc utilities (optional)
-pypotrace>=0.3   # Python bindings for potrace (alternative to CLI)
+cu2qu>=1.6.6     # cubic to quadratic bezier conversion for TTF fonts

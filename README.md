@@ -60,12 +60,18 @@ chmod +x install.sh
 The installer handles everything automatically:
 
 - Detects Python 3.10+ (tries `py`, `python`, `python3`; handles the Windows Store stub issue)
-- Installs `potrace` via winget, chocolatey, or scoop on Windows; brew, apt, dnf, or pacman on macOS/Linux. Falls back to manual instructions only if none of those are available.
+- Installs `potrace` automatically: brew, apt, dnf, or pacman on macOS/Linux; winget, chocolatey, or scoop on Windows, falling back to a direct download from sourceforge into `tools\potrace\` (no admin required). Manual install is only needed if every one of those fails.
 - Creates a Python virtual environment
 - Installs all Python dependencies
 - Pre-downloads the TrOCR model (~300 MB, one time only)
 
-> **Windows note:** The installer uses plain ASCII output (`[OK]`, `[ERROR]`) for compatibility with all terminal types. If you see garbled characters, run it by double-clicking rather than from inside an existing terminal.
+> **Windows + potrace fallback:** if every auto-install attempt fails (rare; usually a network issue), grab it manually:
+> 1. Download `potrace-X.X.win64.zip` from http://potrace.sourceforge.net/#downloading (the installer will open this page for you)
+> 2. Unzip it
+> 3. Copy `potrace.exe` into `tools\potrace\` inside this project (or any folder that's on your `PATH`)
+> 4. Re-run `install.bat`
+
+> **Windows note:** the installer uses plain ASCII output (`[OK]`, `[ERROR]`) for compatibility with all terminal types. If you see garbled characters, run it by double-clicking rather than from inside an existing terminal.
 
 ### 2. Run
 
@@ -125,6 +131,7 @@ handwriting-ai/
 ├── run.bat                      # Windows launcher
 ├── install.sh                   # macOS / Linux installer
 ├── install.bat                  # Windows installer
+├── tools/                       # auto-generated on first Windows install; holds potrace.exe if downloaded locally (gitignored)
 └── .gitignore
 ```
 
@@ -185,9 +192,17 @@ python scripts/test_htr.py photo.jpg --save-preprocessed
 
 ---
 
+## Built with Claude Code
+
+Developed collaboratively with [Claude Code](https://claude.com/claude-code). The architecture and design calls are mine: local-only with no external APIs, TrOCR instead of training a recognizer from scratch, a projection + connected-components segmenter over a heavier ML approach, and a FastAPI job queue in place of a full task framework. Claude accelerated the fiddly parts; routing potrace's cubic beziers through `Cu2QuPen` for TTF quadratic conversion in `builder.py`, tracking down a TrOCR tokenizer being used as a context manager, and catching a UTF-8 parser issue in `install.bat` where cmd.exe was fragmenting commands on multi-byte characters.
+
+Combined human + AI development is the direction things are heading; this project is a deliberate lean into that workflow as much as I could while still maintaining control over things every step along the way.
+
+---
+
 ## License
 
-MIT - do whatever you want with it.
+MIT; do whatever you want with it.
 
 ---
 

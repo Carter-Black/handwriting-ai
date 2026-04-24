@@ -10,7 +10,7 @@ from pathlib import Path
 
 from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen
-from fontTools.cu2qu.pens import Cu2QuPen
+from fontTools.pens.cu2quPen import Cu2QuPen
 
 # em metrics — keep in sync with vectorizer.py
 UPM = 1000
@@ -34,7 +34,14 @@ def build_font(
     """Build and save a .ttf from {char: normalized_svg_path_data}."""
     fb = FontBuilder(UPM, isTTF=True)
 
-    fb.setupNameTable({"familyName": family_name, "styleName": style_name})
+    ps_name = "".join(c for c in family_name if c.isalnum() or c == "-")[:63] or "MyHandwriting"
+    fb.setupNameTable({
+        "familyName": family_name,
+        "styleName": style_name,
+        "fullName": f"{family_name} {style_name}",
+        "version": "Version 1.0",
+        "psName": ps_name,
+    })
 
     glyph_order = _dedup([".notdef", "space"] + [_name(c) for c in sorted(glyph_paths)])
     fb.setupGlyphOrder(glyph_order)
@@ -46,10 +53,11 @@ def build_font(
 
     fb.setupHorizontalHeader(ascent=ASCENDER, descent=DESCENDER)
     fb.setupHorizontalMetrics(_metrics(glyph_paths))
-    fb.setupOs2(
+    fb.setupOS2(
         sTypoAscender=ASCENDER, sTypoDescender=DESCENDER, sTypoLineGap=0,
         usWinAscent=ASCENDER, usWinDescent=abs(DESCENDER),
         sxHeight=X_HEIGHT, sCapHeight=CAP_HEIGHT, fsType=0,
+        usWeightClass=400, usWidthClass=5, fsSelection=0x40,
     )
     fb.setupPost()
     fb.setupHead(unitsPerEm=UPM, created=int(time.time()), modified=int(time.time()))
@@ -82,24 +90,24 @@ def _make_glyph(path_data: str):
     curves that TrueType (.ttf) requires.
     """
     tt = TTGlyphPen(None)
-    _replay(Cu2QuPen(tt, max_err=1.0), path_data)
+    _replay(Cu2QuPen(tt, max_err=1.0, reverse_direction=True), path_data)
     return tt.glyph()
 
 
 def _notdef():
     """Hollow rectangle placeholder for unmapped characters."""
     pen = TTGlyphPen(None)
-    # outer box — clockwise (filled in TTF winding convention)
+    # outer box — clockwise in y-up font space (TTF filled contour)
     pen.moveTo((50, 0))
-    pen.lineTo((550, 0))
-    pen.lineTo((550, 700))
     pen.lineTo((50, 700))
+    pen.lineTo((550, 700))
+    pen.lineTo((550, 0))
     pen.closePath()
-    # inner box — counter-clockwise (punches a hole)
+    # inner box — counter-clockwise in y-up (punches a hole)
     pen.moveTo((100, 50))
-    pen.lineTo((100, 650))
-    pen.lineTo((500, 650))
     pen.lineTo((500, 50))
+    pen.lineTo((500, 650))
+    pen.lineTo((100, 650))
     pen.closePath()
     return pen.glyph()
 

@@ -1,6 +1,9 @@
 @echo off
 setlocal EnableDelayedExpansion
 
+:: if a prior install dropped potrace into tools\potrace\, pick it up
+if exist "%~dp0tools\potrace\potrace.exe" set "PATH=%~dp0tools\potrace;%PATH%"
+
 echo.
 echo  HandwritingAI Installer
 echo  ------------------------
@@ -92,14 +95,46 @@ if !errorlevel! == 0 (
     )
 )
 
+:: try direct download from sourceforge (no admin required, drops into tools\potrace)
+echo Trying direct download from sourceforge...
+
+set "POTRACE_VERSION=1.16"
+set "POTRACE_URL=https://sourceforge.net/projects/potrace/files/%POTRACE_VERSION%/potrace-%POTRACE_VERSION%.win64.zip/download"
+set "POTRACE_ZIP=%TEMP%\potrace-%POTRACE_VERSION%.win64.zip"
+set "POTRACE_EXTRACT=%TEMP%\potrace-extract"
+set "POTRACE_LOCAL=%~dp0tools\potrace"
+
+if not exist "%~dp0tools" mkdir "%~dp0tools" >nul 2>&1
+if not exist "%POTRACE_LOCAL%" mkdir "%POTRACE_LOCAL%" >nul 2>&1
+if exist "%POTRACE_EXTRACT%" rmdir /s /q "%POTRACE_EXTRACT%" >nul 2>&1
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $ProgressPreference = 'SilentlyContinue'; Invoke-WebRequest -Uri '%POTRACE_URL%' -OutFile '%POTRACE_ZIP%' -UseBasicParsing -ErrorAction Stop } catch { exit 1 }"
+if !errorlevel! == 0 (
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Expand-Archive -LiteralPath '%POTRACE_ZIP%' -DestinationPath '%POTRACE_EXTRACT%' -Force -ErrorAction Stop; $exe = Get-ChildItem -Path '%POTRACE_EXTRACT%' -Recurse -Filter potrace.exe -ErrorAction Stop | Select-Object -First 1; if (-not $exe) { exit 1 }; Copy-Item -LiteralPath $exe.FullName -Destination '%POTRACE_LOCAL%\potrace.exe' -Force -ErrorAction Stop } catch { exit 1 }"
+    if !errorlevel! == 0 (
+        if exist "%POTRACE_LOCAL%\potrace.exe" (
+            set "PATH=%POTRACE_LOCAL%;%PATH%"
+            echo [OK] potrace downloaded to tools\potrace\.
+            if exist "%POTRACE_ZIP%" del /q "%POTRACE_ZIP%" >nul 2>&1
+            if exist "%POTRACE_EXTRACT%" rmdir /s /q "%POTRACE_EXTRACT%" >nul 2>&1
+            goto :potrace_done
+        )
+    )
+)
+echo Direct download did not succeed.
+if exist "%POTRACE_ZIP%" del /q "%POTRACE_ZIP%" >nul 2>&1
+if exist "%POTRACE_EXTRACT%" rmdir /s /q "%POTRACE_EXTRACT%" >nul 2>&1
+
 :: all auto-install attempts failed; give clear manual instructions
 echo.
 echo [WARN] Could not auto-install potrace.
 echo.
-echo  Please install it manually:
+echo  Please install it manually (no admin required):
 echo    1. Go to: http://potrace.sourceforge.net/#downloading
 echo    2. Download the Windows binary (potrace-X.X.win64.zip)
-echo    3. Unzip it and copy potrace.exe to C:\Windows\System32\
+echo    3. Unzip it and copy potrace.exe into:
+echo         %~dp0tools\potrace\
+echo       (create that folder if it doesn't exist)
 echo    4. Re-run this installer.
 echo.
 echo  Press any key to open the download page in your browser...
@@ -156,6 +191,7 @@ echo @echo off
 echo set "ROOT=%%~dp0"
 echo set "ROOT=%%ROOT:~0,-1%%"
 echo set "PYTHON=%%ROOT%%\.venv\Scripts\python.exe"
+echo if exist "%%ROOT%%\tools\potrace\potrace.exe" set "PATH=%%ROOT%%\tools\potrace;%%PATH%%"
 echo if not exist "%%PYTHON%%" ^(
 echo     echo [ERROR] Virtual environment not found. Please re-run install.bat.
 echo     pause

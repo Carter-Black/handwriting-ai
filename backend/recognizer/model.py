@@ -29,7 +29,6 @@ GENERATE_KWARGS = {
     "max_new_tokens": 128,
     "num_beams": 4,
     "early_stopping": True,
-    "no_repeat_ngram_size": 3,
 }
 
 
@@ -97,6 +96,19 @@ class HandwritingRecognizer:
         # freeze encoder — only update decoder layers
         for p in self.model.encoder.parameters():
             p.requires_grad = False
+
+        # VisionEncoderDecoderConfig does not auto-populate pad/start/eos
+        # tokens on the top-level config, but Seq2SeqTrainer reads them from
+        # there. Copy them up from the tokenizer before training.
+        tok = self.processor.tokenizer
+        self.model.config.pad_token_id = tok.pad_token_id
+        self.model.config.decoder_start_token_id = tok.cls_token_id
+        self.model.config.eos_token_id = tok.sep_token_id
+        self.model.config.vocab_size = self.model.config.decoder.vocab_size
+        if getattr(self.model, "generation_config", None) is not None:
+            self.model.generation_config.pad_token_id = tok.pad_token_id
+            self.model.generation_config.decoder_start_token_id = tok.cls_token_id
+            self.model.generation_config.eos_token_id = tok.sep_token_id
 
         out_dir = str(self.model_dir / FINE_TUNED_DIR)
         args = Seq2SeqTrainingArguments(

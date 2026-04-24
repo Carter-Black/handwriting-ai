@@ -132,12 +132,14 @@ def _merge_boxes(boxes: list[tuple], gap: float) -> list[tuple]:
     return [tuple(b) for b in merged]
 
 
-def _to_square(img: np.ndarray, size: int = 64) -> np.ndarray:
+def _to_square(img: np.ndarray, size: int = 128) -> np.ndarray:
     """Resize and center a character crop onto a fixed square canvas."""
     h, w = img.shape
     scale = (size - 8) / max(h, w)
     nh, nw = max(1, int(h * scale)), max(1, int(w * scale))
-    resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
+    interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+    resized = cv2.resize(img, (nw, nh), interpolation=interp)
+    _, resized = cv2.threshold(resized, 127, 255, cv2.THRESH_BINARY)
     canvas = np.zeros((size, size), dtype=np.uint8)
     yo, xo = (size - nh) // 2, (size - nw) // 2
     canvas[yo:yo + nh, xo:xo + nw] = resized

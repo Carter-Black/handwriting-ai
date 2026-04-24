@@ -42,8 +42,10 @@ def _run_potrace(img: np.ndarray) -> str | None:
         bmp = os.path.join(tmp, "g.bmp")
         svg = os.path.join(tmp, "g.svg")
 
-        # potrace needs black ink on white — our images are inverted
-        cv2.imwrite(bmp, cv2.bitwise_not(cleaned))
+        # potrace needs black ink on white — our images are inverted; threshold
+        # to pure binary first so grayscale fringe from resize doesn't confuse it
+        _, binary = cv2.threshold(cleaned, 127, 255, cv2.THRESH_BINARY)
+        cv2.imwrite(bmp, cv2.bitwise_not(binary))
 
         r = subprocess.run(
             ["potrace", bmp, "--svg", "--output", svg,
@@ -82,7 +84,10 @@ def _normalize_to_em(path_data: str, src_w: int, src_h: int) -> str:
     x_offset = (EM_SIZE - src_w * scale) / 2               # center horizontally
 
     def xform(x: float, y: float) -> tuple[float, float]:
-        return (x * scale + x_offset, ASCENDER - y * scale)
+        # potrace path d-attribute uses y=0 at image bottom (y-up PostScript coords)
+        # so we scale directly without flipping; reverse_direction in Cu2QuPen
+        # handles the CCW→CW winding conversion required by TrueType
+        return (x * scale + x_offset, y * scale)
 
     return _walk_path(path_data, xform)
 

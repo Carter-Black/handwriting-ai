@@ -114,6 +114,15 @@ echo ""
 echo " --------------------------------"
 echo " [OK] Installation complete!"
 echo ""
-echo " Start the app:  ./run.sh"
-echo " Then open:      http://localhost:8000"
-echo ""
+
+read -r -p "Start HandwritingAI now? [Y/n]: " RUN_NOW
+RUN_NOW=${RUN_NOW:-Y}
+
+if [[ "$RUN_NOW" =~ ^[Yy]$ ]]; then
+    echo ""
+    exec ./run.sh
+else
+    echo ""
+    echo " Run later with: ./run.sh"
+    echo ""
+fi

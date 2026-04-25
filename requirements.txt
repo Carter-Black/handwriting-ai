@@ -20,5 +20,6 @@ accelerate>=0.29.0
 # Font building
 # potrace is invoked as a CLI binary via subprocess (see vectorizer.py),
 # so no Python bindings for potrace are required here.
+# We build .otf (CFF) fonts directly from potrace's cubic beziers via
+# fonttools' T2CharStringPen — no quadratic conversion (cu2qu) needed.
 fonttools>=4.50.0
-cu2qu>=1.6.6     # cubic to quadratic bezier conversion for TTF fonts

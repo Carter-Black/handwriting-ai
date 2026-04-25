@@ -75,25 +75,50 @@ def _mostly_white(img: np.ndarray) -> bool:
 def _extract_lines(inv: np.ndarray) -> list[np.ndarray]:
     """Split inverted image into horizontal line strips."""
     proj = np.sum(inv, axis=1)
+    if proj.max() == 0:
+        return []
     gap_thresh = proj.max() * 0.03
 
-    in_line = False
-    starts, ends = [], []
+    runs = []
+    in_line, start = False, 0
     for i, v in enumerate(proj):
         if not in_line and v > gap_thresh:
-            in_line = True
-            starts.append(i)
+            in_line, start = True, i
         elif in_line and v <= gap_thresh:
             in_line = False
-            ends.append(i)
+            runs.append((start, i))
     if in_line:
-        ends.append(inv.shape[0])
+        runs.append((start, inv.shape[0]))
+    if not runs:
+        return []
+
+    # Drop tiny fragments (descenders/dots that detached from their main row)
+    # and absorb close-by fragments into their nearest real line. Without this,
+    # a 'g' descender between rows becomes its own "line" and breaks the
+    # positional matching against PROMPT_CHARS.
+    max_h = max(b - t for t, b in runs)
+    real = [(t, b) for t, b in runs if (b - t) >= max_h * 0.3]
+    if not real:
+        return []
+    fragments = [(t, b) for t, b in runs if (b - t) < max_h * 0.3]
+    bounds = [list(r) for r in real]
+    median_h = int(np.median([b - t for t, b in real]))
+    absorb_dist = median_h * 0.5
+    for ft, fb in fragments:
+        best, best_d = None, float("inf")
+        for lb in bounds:
+            d = min(abs(ft - lb[1]), abs(fb - lb[0]))
+            if d < best_d:
+                best_d, best = d, lb
+        if best is not None and best_d <= absorb_dist:
+            best[0] = min(best[0], ft)
+            best[1] = max(best[1], fb)
+    bounds.sort()
 
     pad = 4
     return [
         inv[max(0, t - pad):min(inv.shape[0], b + pad), :]
-        for t, b in zip(starts, ends)
-        if b - t > 5
+        for t, b in bounds
     ]
 
 
@@ -112,7 +137,7 @@ def _chars_from_line(line: np.ndarray) -> list[np.ndarray]:
         boxes.append((x, y, w, bh))
 
     boxes.sort(key=lambda b: b[0])  # left to right
-    merged = _merge_boxes(boxes, gap=line.shape[1] * 0.01)
+    merged = _merge_boxes(boxes)
 
     pad = 3
     crops = []
@@ -125,18 +150,34 @@ def _chars_from_line(line: np.ndarray) -> list[np.ndarray]:
     return crops
 
 
-def _merge_boxes(boxes: list[tuple], gap: float) -> list[tuple]:
-    """Merge horizontally adjacent boxes (e.g. dot above 'i' + stem)."""
+def _merge_boxes(boxes: list[tuple]) -> list[tuple]:
+    """
+    Merge components that are vertically stacked (e.g. dot above 'i' stem,
+    dot above 'j', dot above '!' or '?'). Does NOT merge horizontally
+    adjacent components — those are usually separate characters within a
+    word, and merging them collapses entire words into single boxes.
+
+    The previous version merged anything within 1% of line width (~33px on
+    a 3300px-wide image), which over-merged adjacent letters and caused the
+    segmenter to detect ~1/3 of the actual characters.
+    """
     if not boxes:
         return []
     merged = [list(boxes[0])]
     for x, y, w, h in boxes[1:]:
-        prev = merged[-1]
-        if x - (prev[0] + prev[2]) <= gap:
-            new_x = prev[0]
-            new_y = min(prev[1], y)
-            new_r = max(prev[0] + prev[2], x + w)
-            new_b = max(prev[1] + prev[3], y + h)
+        prev_x, prev_y, prev_w, prev_h = merged[-1]
+        prev_right = prev_x + prev_w
+        # Vertical-stacking test: x-ranges overlap by at least 50% of the
+        # narrower box. The dot of an 'i' shares the stem's x-range.
+        x_overlap = max(0, min(x + w, prev_right) - max(x, prev_x))
+        smaller_w = min(w, prev_w)
+        overlap_ratio = x_overlap / smaller_w if smaller_w > 0 else 0
+
+        if overlap_ratio > 0.5:
+            new_x = min(prev_x, x)
+            new_y = min(prev_y, y)
+            new_r = max(prev_right, x + w)
+            new_b = max(prev_y + prev_h, y + h)
             merged[-1] = [new_x, new_y, new_r - new_x, new_b - new_y]
         else:
             merged.append([x, y, w, h])

@@ -210,7 +210,17 @@ echo.
 echo  --------------------------------
 echo  [OK] Installation complete!
 echo.
-echo  To start the app: double-click run.bat
-echo  Then open:        http://localhost:8000
-echo.
-pause
+
+set "RUN_NOW="
+set /p RUN_NOW="Start HandwritingAI now? [Y/n]: "
+if /i "%RUN_NOW%"=="" set "RUN_NOW=Y"
+
+if /i "%RUN_NOW%"=="Y" (
+    echo.
+    call "%~dp0run.bat"
+) else (
+    echo.
+    echo  Run later by double-clicking run.bat
+    echo.
+    pause
+)

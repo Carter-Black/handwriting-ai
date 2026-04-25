@@ -1,8 +1,11 @@
 # main.py
 # local FastAPI server — serves the frontend and runs HTR + font generation jobs
 
+import os
 import shutil
+import threading
 import uuid
+import webbrowser
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, BackgroundTasks
@@ -35,12 +38,15 @@ app.mount("/static", StaticFiles(directory=str(FRONTEND)), name="static")
 # in-memory job tracker (fine for a local single-user app)
 jobs: dict[str, dict] = {}
 
-PROMPT = (
-    "The quick brown fox jumps over the lazy dog. "
-    "Pack my box with five dozen liquor jugs. "
-    "How vexingly quick daft zebras jump! "
-    "0 1 2 3 4 5 6 7 8 9  ! ? . , ; : ' \" ( ) - /"
-)
+# One entry per visual line on the page. Joined with newlines so the fine-tuner
+# can split it back into per-line labels that match the user's actual line breaks.
+PROMPT_LINES = [
+    "The quick brown fox jumps over the lazy dog.",
+    "Pack my box with five dozen liquor jugs.",
+    "How vexingly quick daft zebras jump!",
+    "0 1 2 3 4 5 6 7 8 9 ! ? . , ; : ' \" ( ) - /",
+]
+PROMPT = "\n".join(PROMPT_LINES)
 
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 
@@ -59,7 +65,17 @@ class StatusResponse(BaseModel):
 
 @app.get("/")
 async def root():
-    return FileResponse(str(FRONTEND / "index.html"))
+    # Disable browser caching for the HTML so UI updates show up immediately
+    # on the next page load — without this, Chrome can hold onto an old copy
+    # across reinstalls and the user sees stale UI even though the file changed.
+    return FileResponse(
+        str(FRONTEND / "index.html"),
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.get("/prompt")
@@ -95,16 +111,21 @@ async def upload(files: list[UploadFile] = File(...)):
 
 
 @app.post("/transcribe")
-async def transcribe(bg: BackgroundTasks, files: list[UploadFile] = File(...)):
+async def transcribe(
+    bg: BackgroundTasks,
+    files: list[UploadFile] = File(...),
+    use_fine_tuned: bool = True,
+    use_large_model: bool = False,
+):
     """Upload images and transcribe the handwriting in them. Returns a job_id."""
     job_id, paths = _new_job(), await _save_uploads(files)
-    bg.add_task(_run_transcribe, job_id, paths)
+    bg.add_task(_run_transcribe, job_id, paths, use_fine_tuned, use_large_model)
     return {"job_id": job_id}
 
 
 @app.post("/generate-font")
 async def generate_font(bg: BackgroundTasks, files: list[UploadFile] = File(...), font_name: str = "MyHandwriting"):
-    """Upload images and generate a .otf font. Returns a job_id."""
+    """Upload images and generate a .ttf font. Returns a job_id."""
     job_id, paths = _new_job(), await _save_uploads(files)
     bg.add_task(_run_font, job_id, paths, font_name)
     return {"job_id": job_id}
@@ -125,20 +146,41 @@ async def status(job_id: str):
     return StatusResponse(job_id=job_id, **jobs[job_id])
 
 
+@app.get("/fine-tuned-status")
+async def fine_tuned_status():
+    """Report whether a locally fine-tuned model exists."""
+    target = MODELS / "fine_tuned_trocr"
+    return {"exists": target.exists()}
+
+
+@app.post("/delete-fine-tuned")
+async def delete_fine_tuned():
+    """Remove the locally fine-tuned model so the next run uses the base model."""
+    target = MODELS / "fine_tuned_trocr"
+    if not target.exists():
+        return {"deleted": False, "message": "No fine-tuned model to delete."}
+    shutil.rmtree(target)
+    return {"deleted": True, "message": "Fine-tuned model deleted."}
+
+
 @app.get("/download/font/{font_name}")
 async def download_font(font_name: str):
-    p = FONTS / f"{font_name}.otf"
+    p = FONTS / f"{font_name}.ttf"
     if not p.exists():
         raise HTTPException(404, "Font not found — has it been generated yet?")
-    return FileResponse(str(p), media_type="font/otf", filename=f"{font_name}.otf")
+    return FileResponse(str(p), media_type="font/ttf", filename=f"{font_name}.ttf")
 
 
 # background tasks
 
-def _run_transcribe(job_id: str, paths: list[str]):
+def _run_transcribe(job_id: str, paths: list[str], use_fine_tuned: bool = True, use_large_model: bool = False):
     try:
         _progress(job_id, "Loading model...")
-        recognizer = HandwritingRecognizer(model_dir=str(MODELS))
+        recognizer = HandwritingRecognizer(
+            model_dir=str(MODELS),
+            use_fine_tuned=use_fine_tuned,
+            use_large_model=use_large_model,
+        )
         results = []
 
         for i, path in enumerate(paths):
@@ -179,7 +221,7 @@ def _run_font(job_id: str, paths: list[str], font_name: str):
             raise ValueError("Vectorization produced no usable glyphs.")
 
         _progress(job_id, "Building font file...")
-        out = str(FONTS / f"{font_name}.otf")
+        out = str(FONTS / f"{font_name}.ttf")
         build_font(svg_glyphs, out, family_name=font_name)
 
         jobs[job_id].update(status="done", result=f"/download/font/{font_name}", progress=None)
@@ -223,4 +265,8 @@ def _progress(job_id: str, msg: str):
 if __name__ == "__main__":
     import uvicorn
     print("\n🖊️  HandwritingAI running at http://localhost:8000\n")
+    # Auto-open the default browser once uvicorn has had a moment to bind
+    # the port. Set HANDWRITINGAI_NO_BROWSER=1 to suppress (e.g. headless dev).
+    if not os.environ.get("HANDWRITINGAI_NO_BROWSER"):
+        threading.Timer(1.5, lambda: webbrowser.open("http://localhost:8000")).start()
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)

@@ -79,23 +79,65 @@ def _clean_glyph(img: np.ndarray) -> np.ndarray:
 
 def _normalize_to_em(path_data: str, src_w: int, src_h: int) -> str:
     """
-    Map SVG pixel coordinates → font em coordinates.
+    Map SVG path coordinates → font em coordinates.
 
-    potrace path data is in image pixel space (y-down, origin top-left).
-    Font coordinates are y-up, origin at baseline. We scale, center, and
-    flip here so builder.py gets ready-to-use font coordinates.
+    IMPORTANT: we measure the path's actual bounding box rather than trusting
+    the source-image dimensions. potrace's default --unit=10 quantization
+    means its path coords are 10× the source-pixel size; previous versions of
+    this function assumed coords were in [0, src_w] and ended up scaling
+    glyphs to ~6× the em box, producing the "shattered" Windows rendering
+    pattern. Measuring the actual bbox sidesteps potrace's quantization
+    factor entirely.
+
+    src_w/src_h are kept in the signature for callers' compatibility but
+    are no longer used to compute the scale.
     """
-    if src_w == 0 or src_h == 0:
+    # Collect ONLY on-curve points for bbox calculation. potrace's cubic
+    # off-curve handles can sit well outside the visible curve and would
+    # otherwise stretch the bbox, making the visible letter shrink to a tiny
+    # corner of the em (the "slash + starburst" rendering pattern).
+    tokens = re.findall(r'[MLCZz]|[-+]?(?:\d+\.?\d*|\.\d+)', path_data)
+    xs: list[float] = []
+    ys: list[float] = []
+    i = 0
+    cmd = None
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in ('M', 'L', 'C', 'Z', 'z'):
+            cmd = tok
+            i += 1
+            continue
+        if cmd == 'M':
+            xs.append(float(tokens[i])); ys.append(float(tokens[i + 1]))
+            i += 2
+            cmd = 'L'
+        elif cmd == 'L':
+            xs.append(float(tokens[i])); ys.append(float(tokens[i + 1]))
+            i += 2
+        elif cmd == 'C':
+            # Only the third (on-curve) point counts for bbox; first two are
+            # off-curve handles that can fly far from the actual curve.
+            xs.append(float(tokens[i + 4])); ys.append(float(tokens[i + 5]))
+            i += 6
+        else:
+            i += 1
+
+    if not xs or not ys:
+        return path_data
+    path_w = max(xs) - min(xs)
+    path_h = max(ys) - min(ys)
+    if path_w <= 0 or path_h <= 0:
         return path_data
 
-    scale = min(EM_SIZE / src_w, ASCENDER / src_h) * 0.85  # 15% breathing room
-    x_offset = (EM_SIZE - src_w * scale) / 2               # center horizontally
+    # Fit the actual path bbox into the em with 15% breathing room.
+    scale = min(EM_SIZE / path_w, ASCENDER / path_h) * 0.85
+    new_w = path_w * scale
+    # Center horizontally, drop baseline to y=0 so descenders sit naturally below.
+    x_offset = (EM_SIZE - new_w) / 2 - min(xs) * scale
+    y_offset = -min(ys) * scale
 
     def xform(x: float, y: float) -> tuple[float, float]:
-        # potrace path d-attribute uses y=0 at image bottom (y-up PostScript coords)
-        # so we scale directly without flipping. CFF expects the same CCW winding
-        # potrace produces, so no reversal is needed.
-        return (x * scale + x_offset, y * scale)
+        return (x * scale + x_offset, y * scale + y_offset)
 
     return _walk_path(path_data, xform)
 

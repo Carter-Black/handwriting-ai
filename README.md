@@ -44,7 +44,7 @@ Your photo  →  Preprocessing  →  Line segmentation
 
 **macOS / Linux**
 ```bash
-git clone https://github.com/yourusername/handwriting-ai.git
+git clone https://github.com/Carter-Black/handwriting-ai.git
 cd handwriting-ai
 chmod +x install.sh
 ./install.sh
@@ -154,16 +154,24 @@ This follows the **DA2 augmentation strategy** documented in the [TrOCR paper §
 
 **Honest expectations:** the published threshold for visible improvement on TrOCR fine-tuning is ~500 line examples (Parres et al.). With 1 photo (4 real lines × 10× augment × 5 epochs = 200 passes), expect *some* improvement; with 5 photos × the same multiplier × epochs = 1000 passes, you're in the regime the literature says works. If after fine-tuning the output is still identical to base, the ceiling is the recognizer's general capability — try the **larger model** toggle instead.
 
-### Disk space
+### Where files are stored
 
-| Component | Size | Where |
-|-----------|------|-------|
-| Base TrOCR (`trocr-base-handwritten`) | ~334 MB | HuggingFace cache (`~/.cache/huggingface/hub/`) |
-| Large TrOCR (`trocr-large-handwritten`) | ~558 MB | Same — downloaded on demand only |
-| Fine-tuned base copy | ~1.4 GB | `backend/storage/models/fine_tuned_trocr/` |
-| Python virtual env | ~1–2 GB | `.venv/` in project folder |
+Most things this app creates land **inside the project folder**, but a few large items are stored elsewhere on your machine for caching reasons. Full disclosure:
 
-A fully installed + fine-tuned project folder is **~3–4 GB** total. If you see more, leftover trainer checkpoints from an older code version are the likely cause; delete `backend/storage/models/fine_tuned_trocr/checkpoint-*` to reclaim it.
+| What | Where | Why there |
+|------|-------|-----------|
+| **Project source code** | The `handwriting-ai/` folder you cloned/copied | obvious |
+| **Python virtual env** (~1–2 GB) | `<project>/.venv/` | created by the installer; bound to this project copy |
+| **Uploaded photos** | `<project>/backend/storage/uploads/` | persisted between runs so jobs can finish in the background |
+| **Generated fonts** | `<project>/backend/storage/fonts/MyHandwriting.ttf` | downloadable via the UI |
+| **Fine-tuned model** (~1.4 GB) | `<project>/backend/storage/models/fine_tuned_trocr/` | local-only personalization, never leaves your machine |
+| **Base TrOCR weights** (~334 MB) | HuggingFace cache: `~/.cache/huggingface/hub/` (Linux/macOS) or `C:\Users\<you>\.cache\huggingface\hub\` (Windows) | shared across all HuggingFace projects on your machine — if you delete this project folder, the cached model stays and is reused next time you reinstall |
+| **Large TrOCR weights** (~558 MB) | Same HF cache location, downloaded on demand the first time you check **Use larger model** | same caching reason |
+| **potrace binary** (~1 MB, Windows only) | `<project>/tools/potrace/potrace.exe` if the installer used the SourceForge download fallback; otherwise wherever your package manager put it (e.g. `C:\ProgramData\chocolatey\bin\` or your scoop shims) | bundled with project on Windows since potrace isn't standard there |
+
+A fully installed + fine-tuned **project folder** is ~3 GB. The HF cache outside it adds another ~334 MB (or ~892 MB if you've used the large model too). To fully uninstall: delete the project folder AND the `models--microsoft--trocr-*` subdirectories inside the HF hub cache.
+
+If your project folder is much larger than ~3 GB, you probably have leftover trainer checkpoints from an older version of the code — delete `backend/storage/models/fine_tuned_trocr/checkpoint-*` to reclaim that space.
 
 ---
 
@@ -264,9 +272,7 @@ Claude accelerated the fiddly parts. Highlights from the build:
 - Tracked down a **UTF-8 parser issue in `install.bat`** where cmd.exe was fragmenting commands on multi-byte characters.
 - Implemented the **DA2 augmentation pipeline** (rotation, blur, dilation, erosion, downscaling, noise, brightness shift, elastic deformation) so fine-tuning can extract signal from a single 4-line photo instead of requiring 500+ samples.
 
-Two of those fixes came out of dedicated Claude Research sessions targeting the font and transcription failure modes specifically — the research was good enough that the resulting code change followed directly from the report.
-
-Combined human + AI development is the direction things are heading; this project is a deliberate lean into that workflow as much as I could while still maintaining control over things every step along the way.
+Two of those fixes came out of dedicated Claude + some GPT Research sessions targeting the font and transcription failure modes specifically — the research was good enough that the resulting code change followed directly from the report.
 
 Combined human + AI development is the direction things are heading; this project is a deliberate lean into that workflow as much as I could while still maintaining control over things every step along the way.
 

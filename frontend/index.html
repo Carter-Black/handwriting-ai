@@ -409,12 +409,12 @@
     <div class="tab-content active" id="tab-transcribe">
       <p class="help">Read the handwriting in your uploaded photos and turn it into editable text.</p>
       <div class="row" id="useFineTunedRow" style="display: none;">
-        <input type="checkbox" id="useFineTuned" checked />
+        <input type="checkbox" id="useFineTuned" checked onchange="onModelToggle('useFineTuned')" />
         <label for="useFineTuned">Use my fine-tuned model</label>
       </div>
       <div class="row">
-        <input type="checkbox" id="useLargeModel" />
-        <label for="useLargeModel">Use larger model — slower, ~558 MB extra download (<a href="https://github.com/yourusername/handwriting-ai#which-model-should-i-use" style="color:var(--accent);">see README</a>)</label>
+        <input type="checkbox" id="useLargeModel" onchange="onModelToggle('useLargeModel')" />
+        <label for="useLargeModel">Use larger model — slower, ~558 MB extra download (<a href="https://github.com/Carter-Black/handwriting-ai#which-model-should-i-use" style="color:var(--accent);">see README</a>)</label>
       </div>
       <button class="btn btn-primary" id="transcribeBtn" onclick="runTranscribe()">Run transcription</button>
       <div class="status" id="transcribeStatus"></div>
@@ -596,6 +596,18 @@
     el.innerHTML = type === "processing"
       ? `<div class="spinner"></div><span>${msg}</span>`
       : `<span>${msg}</span>`;
+  }
+
+  // The two model toggles are mutually exclusive: a fine-tuned copy can
+  // only be loaded into the BASE architecture (it was trained from base),
+  // and the LARGE model has different tensor shapes so the fine-tuned
+  // weights can't be loaded into it. Checking either one auto-unchecks
+  // the other so the UI matches what the backend will actually do.
+  function onModelToggle(which) {
+    const ft = document.getElementById("useFineTuned");
+    const lg = document.getElementById("useLargeModel");
+    if (which === "useFineTuned" && ft.checked) lg.checked = false;
+    if (which === "useLargeModel" && lg.checked) ft.checked = false;
   }
 
   // Transcription

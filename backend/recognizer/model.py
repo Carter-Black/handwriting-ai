@@ -413,17 +413,22 @@ def _elastic_transform(img: np.ndarray, alpha: float, sigma: float) -> np.ndarra
 def _trim_trailing_noise(text: str) -> str:
     """
     Strip trailing artifacts that TrOCR with length_penalty=2.0 sometimes
-    appends to fill out beam scores past the visual content. Common
-    patterns: trailing ellipsis ('...'), single isolated punctuation
-    floating after the last meaningful word, runs of dots/commas.
+    appends past the visual content. Common patterns:
+      - trailing ellipsis ('...')
+      - orphan punctuation after a space
+      - "<punct> <small-number>" patterns like ', 1' or '. 7' that the model
+        emits trying to start something it never finishes
     """
     import re as _re
     text = text.rstrip()
-    # Repeatedly strip trailing ellipses and orphan punctuation tokens
     while True:
         prev = text
-        text = _re.sub(r'\s*\.{2,}\s*$', '', text)            # trailing "..." / "...."
-        text = _re.sub(r'\s+[.,;:!?\'"\-/()]+\s*$', '', text) # orphan punct after a space
+        # Trailing ellipsis (any run of 2+ dots)
+        text = _re.sub(r'\s*\.{2,}\s*$', '', text)
+        # "<comma|period|colon|...> <space> <1-3 digits>" at end (',  1', '. 7')
+        text = _re.sub(r'\s*[.,;:!?]\s*\d{1,3}\s*$', '', text)
+        # Orphan trailing punctuation after a space (' ,', ' ;')
+        text = _re.sub(r'\s+[.,;:!?\'"\-/()]+\s*$', '', text)
         text = text.rstrip()
         if text == prev:
             break

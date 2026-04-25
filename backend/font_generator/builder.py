@@ -98,6 +98,21 @@ def build_font(
     metrics = _metrics(glyph_paths, glyf_table)
     fb.setupHorizontalMetrics(metrics)
 
+    # Per-glyph bbox diagnostic. If glyphs are wildly oversized or
+    # microscopic the path-normalization bbox-fit didn't work and the glyph
+    # will render as a slash + starburst.
+    print("[build] per-glyph bbox check (first 8 user glyphs):")
+    sample = [_name(c) for c in sorted(glyph_paths)[:8]]
+    for gname in sample:
+        g = glyf_table[gname]
+        if g.numberOfContours > 0:
+            w = g.xMax - g.xMin
+            h = g.yMax - g.yMin
+            warn = "  <-- OUT OF RANGE" if (w > 1100 or h > 1100 or w < 30 or h < 30) else ""
+            print(f"[build]   {gname:>10}: contours={g.numberOfContours:>2}  pts={len(g.coordinates):>4}  bbox=({g.xMin:>4},{g.yMin:>4})-({g.xMax:>4},{g.yMax:>4})  size={w}x{h}{warn}")
+        else:
+            print(f"[build]   {gname:>10}: empty (placeholder used)")
+
     fb.setupHorizontalHeader(ascent=ASCENDER, descent=DESCENDER, lineGap=0)
 
     # OS/2 — Windows checks every one of these. usWinAscent/usWinDescent are
@@ -152,34 +167,26 @@ def _make_glyph(path_data: str):
     """
     Build a TTF glyph from a cubic-bezier SVG path.
 
-    Primary path: feed cubics through Cu2QuPen which converts to TTF-native
-    quadratics AND reverses winding (potrace CCW → TTF CW) in one operation.
-    This is the same chain ufo2ft uses to compile production fonts.
+    PRIMARY: line-flatten the cubics into many lineTo's. This is lossy
+    (curves become piecewise-linear) but bulletproof: all coordinates are
+    on-curve points sampled along the actual curve, so no off-curve
+    outliers can stretch the glyph bbox or create the "slash + starburst"
+    rendering signature.
 
-    Wrap with _DegenerateFilterPen so that contours which collapse to <3
-    unique integer points after rounding are dropped, not emitted as broken
-    1-2-point contours that confuse the rasterizer (the "stray triangle"
-    rendering signature).
+    Why we don't use Cu2QuPen as primary anymore: Cu2QuPen converts cubic
+    beziers to quadratic, but for near-linear input cubics the optimal
+    quadratic approximation often places off-curve control points far
+    outside the visible curve. Those off-curve outliers stretched the
+    visible glyph into a tiny corner of the em with a long line connecting
+    to the outlier. Line flattening sidesteps the problem entirely.
 
-    After the glyph is built, set the OVERLAP_SIMPLE flag on the first
-    point. This tells DirectWrite/Windows to use non-zero winding union
-    instead of even-odd fill — required when potrace produces overlapping
-    contours (which it can after cu2qu's quadratic approximation).
+    Wrapping order:  pen ← ReverseContourPen ← _DegenerateFilterPen ← TTGlyphPen
+    - ReverseContourPen flips potrace's CCW outer to TTF's required CW.
+    - _DegenerateFilterPen drops contours <3 unique integer points so
+      rounding artifacts can't produce stray-line glyph errors.
+
+    Fallback: try Cu2QuPen if for any reason flattening fails.
     """
-    last_err: Exception | None = None
-    for max_err in CU2QU_TOLERANCES:
-        try:
-            tt_pen = TTGlyphPen(None)
-            filt = _DegenerateFilterPen(tt_pen)
-            cu2qu = Cu2QuPen(filt, max_err=max_err, reverse_direction=True)
-            _replay_cubics(cu2qu, path_data)
-            glyph = tt_pen.glyph()
-            _mark_overlap(glyph)
-            return glyph
-        except Exception as e:
-            last_err = e
-
-    # Fallback: flatten cubics to many lineTo's and reverse winding manually.
     try:
         tt_pen = TTGlyphPen(None)
         filt = _DegenerateFilterPen(tt_pen)
@@ -188,11 +195,24 @@ def _make_glyph(path_data: str):
         glyph = tt_pen.glyph()
         _mark_overlap(glyph)
         return glyph
-    except Exception as e:
+    except Exception as flatten_err:
+        # Last-resort fallback: try Cu2QuPen at progressively looser tolerances.
+        last = flatten_err
+        for max_err in CU2QU_TOLERANCES:
+            try:
+                tt_pen = TTGlyphPen(None)
+                filt = _DegenerateFilterPen(tt_pen)
+                cu2qu = Cu2QuPen(filt, max_err=max_err, reverse_direction=True)
+                _replay_cubics(cu2qu, path_data)
+                glyph = tt_pen.glyph()
+                _mark_overlap(glyph)
+                return glyph
+            except Exception as e:
+                last = e
         raise RuntimeError(
-            f"both Cu2QuPen and line-flatten fallback failed; "
-            f"cu2qu: {last_err}; flatten: {e}"
-        ) from e
+            f"both line-flatten and Cu2QuPen fallback failed; "
+            f"flatten: {flatten_err}; cu2qu: {last}"
+        ) from last
 
 
 def _mark_overlap(glyph) -> None:

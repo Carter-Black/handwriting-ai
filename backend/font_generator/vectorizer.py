@@ -20,15 +20,23 @@ ASCENDER = 800
 
 def vectorize_glyphs(char_images: dict[str, np.ndarray]) -> dict[str, str]:
     """Convert {char: binary_image} → {char: em-normalized svg path string}."""
+    print(f"[vectorize] tracing {len(char_images)} glyphs through potrace...")
     results: dict[str, str] = {}
+    failures: list[tuple[str, str]] = []
     for char, img in char_images.items():
         try:
             h, w = img.shape[:2]
             raw = _run_potrace(img)
             if raw:
                 results[char] = _normalize_to_em(raw, w, h)
+            else:
+                failures.append((char, "potrace returned no path data"))
         except Exception as e:
-            print(f"  skipping '{char}': {e}")
+            failures.append((char, str(e)))
+
+    print(f"[vectorize] vectorized {len(results)}/{len(char_images)} glyphs")
+    for ch, reason in failures:
+        print(f"[vectorize]   '{ch}' skipped: {reason}")
     return results
 
 
@@ -85,8 +93,8 @@ def _normalize_to_em(path_data: str, src_w: int, src_h: int) -> str:
 
     def xform(x: float, y: float) -> tuple[float, float]:
         # potrace path d-attribute uses y=0 at image bottom (y-up PostScript coords)
-        # so we scale directly without flipping; reverse_direction in Cu2QuPen
-        # handles the CCW→CW winding conversion required by TrueType
+        # so we scale directly without flipping. CFF expects the same CCW winding
+        # potrace produces, so no reversal is needed.
         return (x * scale + x_offset, y * scale)
 
     return _walk_path(path_data, xform)

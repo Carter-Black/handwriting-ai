@@ -1,5 +1,5 @@
 # builder.py
-# assembles a .ttf font from normalized SVG path data using fonttools
+# assembles a .otf font from normalized SVG path data using fonttools
 # coordinates arriving here are already in em space (from vectorizer.py)
 
 from __future__ import annotations
@@ -9,8 +9,7 @@ import time
 from pathlib import Path
 
 from fontTools.fontBuilder import FontBuilder
-from fontTools.pens.ttGlyphPen import TTGlyphPen
-from fontTools.pens.cu2quPen import Cu2QuPen
+from fontTools.pens.t2CharStringPen import T2CharStringPen
 
 # em metrics — keep in sync with vectorizer.py
 UPM = 1000
@@ -31,8 +30,9 @@ def build_font(
     family_name: str = "MyHandwriting",
     style_name: str = "Regular",
 ):
-    """Build and save a .ttf from {char: normalized_svg_path_data}."""
-    fb = FontBuilder(UPM, isTTF=True)
+    """Build and save a .otf from {char: normalized_svg_path_data}."""
+    print(f"[build] assembling OTF: {len(glyph_paths)} source glyphs (+ .notdef + space)")
+    fb = FontBuilder(UPM, isTTF=False)
 
     ps_name = "".join(c for c in family_name if c.isalnum() or c == "-")[:63] or "MyHandwriting"
     fb.setupNameTable({
@@ -52,7 +52,8 @@ def build_font(
     fb.setupCharacterMap(cmap)
 
     fb.setupHorizontalHeader(ascent=ASCENDER, descent=DESCENDER)
-    fb.setupHorizontalMetrics(_metrics(glyph_paths))
+    metrics = _metrics(glyph_paths)
+    fb.setupHorizontalMetrics(metrics)
     fb.setupOS2(
         sTypoAscender=ASCENDER, sTypoDescender=DESCENDER, sTypoLineGap=0,
         usWinAscent=ASCENDER, usWinDescent=abs(DESCENDER),
@@ -62,54 +63,84 @@ def build_font(
     fb.setupPost()
     fb.setupHead(unitsPerEm=UPM, created=int(time.time()), modified=int(time.time()))
 
-    # build glyph outlines
-    glyphs = {
-        ".notdef": _notdef(),
-        "space": TTGlyphPen(None).glyph(),
+    # build CFF charstrings
+    # potrace emits cubic beziers; CFF uses cubics natively — no Cu2QuPen needed.
+    # potrace outer contours are CCW in y-up PostScript space, which is exactly
+    # what CFF expects, so no winding reversal is required either.
+    charstrings = {
+        ".notdef": _make_notdef(metrics[".notdef"][0]),
+        "space":   _make_space(SPACE_ADVANCE),
     }
+    failures: list[tuple[str, str]] = []
     for ch, path_data in glyph_paths.items():
         gname = _name(ch)
+        adv = metrics[gname][0]
         try:
-            glyphs[gname] = _make_glyph(path_data)
+            charstrings[gname] = _make_glyph(path_data, adv)
         except Exception as e:
-            print(f"  '{ch}' failed, using placeholder: {e}")
-            glyphs[gname] = _notdef()
+            failures.append((ch, str(e)))
+            charstrings[gname] = _make_notdef(adv)
 
-    fb.setupGlyf(glyphs)
+    if failures:
+        print(f"[build] {len(failures)} glyph(s) used placeholder:")
+        for ch, reason in failures:
+            print(f"[build]   '{ch}': {reason}")
+
+    fb.setupCFF(
+        nameStrings={"version": "001.000"},
+        topDict={
+            "UnderlinePosition": -100,
+            "UnderlineThickness": 50,
+        },
+        charStrings=charstrings,
+        privateDict={
+            # nominalWidthX=0 means the advance width stored in the charstring
+            # equals the value passed to T2CharStringPen — no offset arithmetic needed.
+            "defaultWidthX": 0,
+            "nominalWidthX": 0,
+        },
+    )
+
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     fb.font.save(output_path)
-    print(f"saved {output_path} ({len(glyph_paths)} glyphs)")
+    size_kb = Path(output_path).stat().st_size / 1024
+    print(f"[build] saved: {output_path} ({size_kb:.1f} KB, {len(charstrings)} total glyphs)")
 
 
 # glyph construction
 
-def _make_glyph(path_data: str):
+def _make_glyph(path_data: str, advance_width: int):
     """
-    Draw path data through Cu2QuPen → TTGlyphPen.
-    Cu2QuPen converts the cubic beziers from potrace into the quadratic
-    curves that TrueType (.ttf) requires.
+    Draw path data through T2CharStringPen.
+    potrace emits cubic beziers which CFF uses natively — no conversion needed.
     """
-    tt = TTGlyphPen(None)
-    _replay(Cu2QuPen(tt, max_err=1.0, reverse_direction=True), path_data)
-    return tt.glyph()
+    pen = T2CharStringPen(advance_width, None)
+    _replay(pen, path_data)
+    return pen.getCharString()
 
 
-def _notdef():
+def _make_notdef(advance: int):
     """Hollow rectangle placeholder for unmapped characters."""
-    pen = TTGlyphPen(None)
-    # outer box — clockwise in y-up font space (TTF filled contour)
+    pen = T2CharStringPen(advance, None)
+    # outer box — CCW in y-up (PostScript/CFF convention for a filled outer contour)
     pen.moveTo((50, 0))
-    pen.lineTo((50, 700))
-    pen.lineTo((550, 700))
     pen.lineTo((550, 0))
+    pen.lineTo((550, 700))
+    pen.lineTo((50, 700))
     pen.closePath()
-    # inner box — counter-clockwise in y-up (punches a hole)
+    # inner box — CW in y-up (punches a hole through the fill)
     pen.moveTo((100, 50))
-    pen.lineTo((500, 50))
-    pen.lineTo((500, 650))
     pen.lineTo((100, 650))
+    pen.lineTo((500, 650))
+    pen.lineTo((500, 50))
     pen.closePath()
-    return pen.glyph()
+    return pen.getCharString()
+
+
+def _make_space(advance: int):
+    """Space glyph — advance width only, no contours."""
+    pen = T2CharStringPen(advance, None)
+    return pen.getCharString()
 
 
 def _replay(pen, path_data: str):

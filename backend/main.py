@@ -104,7 +104,7 @@ async def transcribe(bg: BackgroundTasks, files: list[UploadFile] = File(...)):
 
 @app.post("/generate-font")
 async def generate_font(bg: BackgroundTasks, files: list[UploadFile] = File(...), font_name: str = "MyHandwriting"):
-    """Upload images and generate a .ttf font. Returns a job_id."""
+    """Upload images and generate a .otf font. Returns a job_id."""
     job_id, paths = _new_job(), await _save_uploads(files)
     bg.add_task(_run_font, job_id, paths, font_name)
     return {"job_id": job_id}
@@ -127,10 +127,10 @@ async def status(job_id: str):
 
 @app.get("/download/font/{font_name}")
 async def download_font(font_name: str):
-    p = FONTS / f"{font_name}.ttf"
+    p = FONTS / f"{font_name}.otf"
     if not p.exists():
         raise HTTPException(404, "Font not found — has it been generated yet?")
-    return FileResponse(str(p), media_type="font/ttf", filename=f"{font_name}.ttf")
+    return FileResponse(str(p), media_type="font/otf", filename=f"{font_name}.otf")
 
 
 # background tasks
@@ -179,7 +179,7 @@ def _run_font(job_id: str, paths: list[str], font_name: str):
             raise ValueError("Vectorization produced no usable glyphs.")
 
         _progress(job_id, "Building font file...")
-        out = str(FONTS / f"{font_name}.ttf")
+        out = str(FONTS / f"{font_name}.otf")
         build_font(svg_glyphs, out, family_name=font_name)
 
         jobs[job_id].update(status="done", result=f"/download/font/{font_name}", progress=None)

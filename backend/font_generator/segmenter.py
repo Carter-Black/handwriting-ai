@@ -31,15 +31,19 @@ def segment_characters(image: np.ndarray) -> dict[str, np.ndarray]:
     Returns {char: binary_image} using the known prompt sequence as labels.
     When a character appears multiple times, we keep the largest (clearest) crop.
     """
+    print(f"[segment] image: {image.shape[1]}x{image.shape[0]} px")
     inv = cv2.bitwise_not(image) if _mostly_white(image) else image.copy()
 
     lines = _extract_lines(inv)
+    print(f"[segment] detected {len(lines)} line(s)")
     collected: dict[str, list[np.ndarray]] = {}
     prompt_chars = [c for c in PROMPT_CHARS]
     prompt_idx = 0
+    total_regions = 0
 
-    for line in lines:
+    for line_idx, line in enumerate(lines):
         chars = _chars_from_line(line)
+        total_regions += len(chars)
         for crop in chars:
             # skip spaces in the prompt sequence
             while prompt_idx < len(prompt_chars) and prompt_chars[prompt_idx] == " ":
@@ -50,6 +54,13 @@ def segment_characters(image: np.ndarray) -> dict[str, np.ndarray]:
             prompt_idx += 1
             if label in TARGET_CHARS:
                 collected.setdefault(label, []).append(crop)
+
+    print(f"[segment] segmented {total_regions} character regions; assigned positionally against prompt")
+    print(f"[segment] consumed prompt index: {prompt_idx}/{len(prompt_chars)}")
+    print(f"[segment] kept {len(collected)} unique chars: {' '.join(sorted(collected))}")
+    missing = [c for c in TARGET_CHARS if c not in collected]
+    if missing:
+        print(f"[segment] {len(missing)} target chars not captured: {' '.join(missing)}")
 
     # keep the largest crop per character — bigger usually means more detail
     return {ch: max(crops, key=lambda c: c.shape[0] * c.shape[1]) for ch, crops in collected.items()}

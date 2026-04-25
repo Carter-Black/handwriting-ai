@@ -50,8 +50,14 @@ class HandwritingRecognizer:
         progress_cb(current_line, total_lines) is called if provided.
         """
         pil = self._to_pil(image)
+        print(f"[transcribe] image: {pil.width}x{pil.height} px")
         lines = self._split_lines(pil)
         total = len(lines)
+        if total == 0:
+            print(f"[transcribe] WARNING: no lines detected — image may be blank or threshold too high")
+            return ""
+        heights = [l.height for l in lines]
+        print(f"[transcribe] detected {total} line(s); heights min={min(heights)} max={max(heights)} px")
         out = []
 
         for i, line in enumerate(lines):
@@ -61,7 +67,9 @@ class HandwritingRecognizer:
             px = self.processor(images=line, return_tensors="pt").pixel_values.to(self.device)
             with torch.no_grad():
                 ids = self.model.generate(px, **GENERATE_KWARGS)
-            out.append(self.processor.batch_decode(ids, skip_special_tokens=True)[0].strip())
+            text = self.processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
+            out.append(text)
+            print(f"[transcribe]   line {i+1}/{total} (h={line.height}): {text!r}")
 
         if progress_cb:
             progress_cb(total, total)
@@ -79,19 +87,39 @@ class HandwritingRecognizer:
         Uses the known prompt paragraph as ground-truth labels (self-supervised).
         Saves the fine-tuned model locally so it only needs to run once.
         """
-        print("Building fine-tune dataset...")
+        print(f"[fine-tune] building dataset from {len(image_paths)} image(s)")
+        print(f"[fine-tune] ground truth: {len(ground_truth.split())} words")
         pairs: list[tuple[Image.Image, str]] = []
+        line_counts: list[int] = []
 
-        for path in image_paths:
+        for idx, path in enumerate(image_paths):
             pil = preprocess_for_model(path)
             lines = self._split_lines(pil)
+            line_counts.append(len(lines))
             labels = _split_text(ground_truth, len(lines))
-            for img_line, label in zip(lines, labels):
+            print(f"[fine-tune] image {idx+1}/{len(image_paths)}: {len(lines)} lines → {len(labels)} label chunks")
+            shown = 0
+            for j, (img_line, label) in enumerate(zip(lines, labels)):
                 if label.strip():
+                    if shown < 3:
+                        preview = label if len(label) <= 50 else label[:50] + "..."
+                        print(f"[fine-tune]   line {j+1} ↔ {preview!r}")
+                        shown += 1
                     pairs.append((img_line, label))
+            if len(lines) > 3:
+                print(f"[fine-tune]   ... ({len(lines) - 3} more line/label pairs)")
+
+        if len(set(line_counts)) > 1:
+            print(f"[fine-tune] WARNING: line counts vary across images: {line_counts}")
+            print(f"[fine-tune]   The prompt is split per-image by word count, so labels")
+            print(f"[fine-tune]   will be misaligned and the model will overfit on whichever")
+            print(f"[fine-tune]   phrase happens to dominate. For best results use a single")
+            print(f"[fine-tune]   image, or write the prompt with the SAME line breaks across")
+            print(f"[fine-tune]   every image you submit.")
 
         if not pairs:
             raise ValueError("No usable image/label pairs found.")
+        print(f"[fine-tune] total training pairs: {len(pairs)}")
 
         # freeze encoder — only update decoder layers
         for p in self.model.encoder.parameters():
@@ -119,7 +147,11 @@ class HandwritingRecognizer:
             weight_decay=0.01,
             predict_with_generate=True,
             logging_steps=10,
-            save_strategy="epoch",
+            # "no" = don't write per-epoch checkpoint folders during training.
+            # Each checkpoint includes the Adam optimizer state (~2x the model
+            # size), so 3 epochs = ~12 GB of disk we never reuse. The final
+            # model is saved explicitly via save_pretrained() after train().
+            save_strategy="no",
             fp16=torch.cuda.is_available(),
             dataloader_num_workers=0,
             report_to="none",
@@ -144,12 +176,20 @@ class HandwritingRecognizer:
 
     def _load(self):
         fine_tuned = self.model_dir / FINE_TUNED_DIR
-        src = str(fine_tuned) if fine_tuned.exists() else MODEL_NAME
-        print(f"Loading TrOCR from: {src}")
+        is_fine_tuned = fine_tuned.exists()
+        src = str(fine_tuned) if is_fine_tuned else MODEL_NAME
+        label = "FINE-TUNED" if is_fine_tuned else "BASE"
+        print(f"[model] device: {self.device}")
+        print(f"[model] loading {label}: {src}")
+        if is_fine_tuned:
+            print(f"[model] note: this is a previously fine-tuned model. If transcription")
+            print(f"[model]   quality is poor (e.g. repetitive phrases like 'with five dozen'),")
+            print(f"[model]   delete this folder and retry to fall back to the base model:")
+            print(f"[model]   {fine_tuned}")
         self.processor = TrOCRProcessor.from_pretrained(src)
         self.model = VisionEncoderDecoderModel.from_pretrained(src)
         self.model.to(self.device).eval()
-        print("Model ready.")
+        print(f"[model] ready")
 
     def _to_pil(self, image: np.ndarray | Image.Image) -> Image.Image:
         if isinstance(image, Image.Image):

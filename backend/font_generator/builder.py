@@ -2,13 +2,19 @@
 # assembles a .ttf font from normalized SVG path data using fonttools
 # coordinates arriving here are already in em space (from vectorizer.py)
 #
-# Approach: pass cubic beziers from potrace through Cu2QuPen, which converts
-# them to quadratics AND reverses contour direction (potrace CCW outer → TTF CW
-# outer) in one shot — this is the same chain ufo2ft uses for production fonts.
-# We DO NOT call TTGlyphPen.curveTo() directly with cubics: that triggers the
-# `flagCubic = 0x80` "cubic curves in glyf" extension, which Windows GDI and
-# DirectWrite don't understand and which produces the classic "shattered glyph"
-# rendering. See FontResearch.txt §8 for the full diagnosis.
+# Approach: line-flatten the cubic beziers from potrace into polylines, then
+# feed through ReverseContourPen → TTGlyphPen.  We do NOT use Cu2QuPen as
+# primary because it places off-curve quadratic control points far outside
+# near-linear cubics, stretching the glyph bbox into a tiny corner.
+#
+# Winding:  potrace path data reaches us in SVG drawing coordinates; after
+# normalization, ReverseContourPen keeps the final TrueType contour direction
+# consistent for Windows rasterizers.
+#
+# We DO NOT call TTGlyphPen.curveTo() directly with cubics: that triggers
+# `flagCubic = 0x80` (the cubic-glyf extension), which Windows GDI and
+# DirectWrite can't render and which causes the "shattered glyph" pattern.
+# See FontResearch.txt §8 for the full diagnosis.
 
 from __future__ import annotations
 
@@ -326,41 +332,21 @@ def _replay_cubics(pen, path_data: str):
     "invalid contour", which is exactly the failure pattern we hit on
     glyphs 'e', 'w', 'y', 'd', '8'.
     """
-    tokens = re.findall(r'[MLCZz]|[-+]?(?:\d+\.?\d*|\.\d+)', path_data)
-    i = 0
-    cmd = None
     in_contour = False
 
-    while i < len(tokens):
-        tok = tokens[i]
-
-        if tok in ('M', 'L', 'C', 'Z', 'z'):
-            cmd = tok
-            if cmd in ('Z', 'z') and in_contour:
-                pen.closePath()
-                in_contour = False
-            i += 1
-            continue
-
-        if cmd == 'M':
+    for cmd, pts in _iter_svg_path(path_data):
+        if cmd == "M":
             if in_contour:
                 pen.closePath()  # auto-close before new contour
-            pen.moveTo((float(tokens[i]), float(tokens[i + 1])))
+            pen.moveTo(pts[0])
             in_contour = True
-            i += 2
-            cmd = 'L'
-        elif cmd == 'L':
-            pen.lineTo((float(tokens[i]), float(tokens[i + 1])))
-            i += 2
-        elif cmd == 'C':
-            pen.curveTo(
-                (float(tokens[i]),     float(tokens[i + 1])),
-                (float(tokens[i + 2]), float(tokens[i + 3])),
-                (float(tokens[i + 4]), float(tokens[i + 5])),
-            )
-            i += 6
-        else:
-            i += 1
+        elif cmd == "L":
+            pen.lineTo(pts[0])
+        elif cmd == "C":
+            pen.curveTo(*pts)
+        elif cmd == "Z" and in_contour:
+            pen.closePath()
+            in_contour = False
 
     if in_contour:
         pen.closePath()
@@ -371,38 +357,22 @@ def _replay_flattened(pen, path_data: str, segments: int = 12):
     Fallback: replay SVG path with cubics flattened to N line segments each.
     Same defensive auto-close behavior as _replay_cubics.
     """
-    tokens = re.findall(r'[MLCZz]|[-+]?(?:\d+\.?\d*|\.\d+)', path_data)
-    i = 0
-    cmd = None
     cur = (0.0, 0.0)
     in_contour = False
 
-    while i < len(tokens):
-        tok = tokens[i]
-        if tok in ('M', 'L', 'C', 'Z', 'z'):
-            cmd = tok
-            if cmd in ('Z', 'z') and in_contour:
-                pen.closePath()
-                in_contour = False
-            i += 1
-            continue
-        if cmd == 'M':
+    for cmd, pts in _iter_svg_path(path_data):
+        if cmd == "M":
             if in_contour:
                 pen.closePath()  # auto-close before new contour
-            cur = (float(tokens[i]), float(tokens[i + 1]))
+            cur = pts[0]
             pen.moveTo(cur)
             in_contour = True
-            i += 2
-            cmd = 'L'
-        elif cmd == 'L':
-            cur = (float(tokens[i]), float(tokens[i + 1]))
+        elif cmd == "L":
+            cur = pts[0]
             pen.lineTo(cur)
-            i += 2
-        elif cmd == 'C':
+        elif cmd == "C":
             p0 = cur
-            p1 = (float(tokens[i]),     float(tokens[i + 1]))
-            p2 = (float(tokens[i + 2]), float(tokens[i + 3]))
-            p3 = (float(tokens[i + 4]), float(tokens[i + 5]))
+            p1, p2, p3 = pts
             for j in range(1, segments + 1):
                 t = j / segments
                 u = 1 - t
@@ -410,12 +380,115 @@ def _replay_flattened(pen, path_data: str, segments: int = 12):
                 y = u*u*u*p0[1] + 3*u*u*t*p1[1] + 3*u*t*t*p2[1] + t*t*t*p3[1]
                 pen.lineTo((x, y))
             cur = p3
-            i += 6
-        else:
-            i += 1
+        elif cmd == "Z" and in_contour:
+            pen.closePath()
+            in_contour = False
 
     if in_contour:
         pen.closePath()
+
+
+def _iter_svg_path(path_data: str):
+    """
+    Yield absolute uppercase SVG operations as (cmd, points).
+
+    Potrace often emits relative lowercase cubics. If the parser ignores the
+    "c" command token, the six cubic deltas are consumed as three absolute
+    line segments, producing the classic diagonal slash/starburst glyph while
+    still leaving a structurally valid font.
+    """
+    tokens = re.findall(
+        r'[MmLlHhVvCcZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?',
+        path_data,
+    )
+    i = 0
+    cmd = None
+    cur = (0.0, 0.0)
+    start = (0.0, 0.0)
+
+    def is_cmd(value: str) -> bool:
+        return bool(re.fullmatch(r'[MmLlHhVvCcZz]', value))
+
+    def number() -> float:
+        nonlocal i
+        value = float(tokens[i])
+        i += 1
+        return value
+
+    while i < len(tokens):
+        if is_cmd(tokens[i]):
+            cmd = tokens[i]
+            i += 1
+
+        if cmd is None:
+            i += 1
+            continue
+
+        if cmd in ("Z", "z"):
+            cur = start
+            yield "Z", ()
+            cmd = None
+            continue
+
+        if cmd in ("M", "m"):
+            first = True
+            rel = cmd == "m"
+            while i < len(tokens) and not is_cmd(tokens[i]):
+                x, y = number(), number()
+                if rel:
+                    x += cur[0]; y += cur[1]
+                cur = (x, y)
+                if first:
+                    start = cur
+                    yield "M", (cur,)
+                    first = False
+                else:
+                    yield "L", (cur,)
+            cmd = "l" if rel else "L"
+            continue
+
+        if cmd in ("L", "l"):
+            rel = cmd == "l"
+            while i < len(tokens) and not is_cmd(tokens[i]):
+                x, y = number(), number()
+                if rel:
+                    x += cur[0]; y += cur[1]
+                cur = (x, y)
+                yield "L", (cur,)
+            continue
+
+        if cmd in ("H", "h"):
+            rel = cmd == "h"
+            while i < len(tokens) and not is_cmd(tokens[i]):
+                x = number()
+                if rel:
+                    x += cur[0]
+                cur = (x, cur[1])
+                yield "L", (cur,)
+            continue
+
+        if cmd in ("V", "v"):
+            rel = cmd == "v"
+            while i < len(tokens) and not is_cmd(tokens[i]):
+                y = number()
+                if rel:
+                    y += cur[1]
+                cur = (cur[0], y)
+                yield "L", (cur,)
+            continue
+
+        if cmd in ("C", "c"):
+            rel = cmd == "c"
+            while i < len(tokens) and not is_cmd(tokens[i]):
+                pts = []
+                for _ in range(3):
+                    x, y = number(), number()
+                    if rel:
+                        x += cur[0]; y += cur[1]
+                    pts.append((x, y))
+                cur = pts[2]
+                yield "C", tuple(pts)
+            continue
 
 
 def _validate_font(path: str) -> None:

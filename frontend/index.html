@@ -215,6 +215,9 @@
     .tab-content { display: none; }
     .tab-content.active { display: block; }
 
+    .mode-card { padding-bottom: 18px; }
+    .mode-card .tabs { margin-bottom: 0; }
+
     /* Form rows */
     .row {
       display: flex;
@@ -342,6 +345,24 @@
     }
     .download:hover { opacity: 0.9; }
 
+    .font-preview {
+      display: block;
+      width: 100%;
+      max-height: 520px;
+      object-fit: contain;
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      margin-top: 12px;
+    }
+
+    .diag {
+      color: var(--muted);
+      font-size: 0.8rem;
+      margin-top: 10px;
+      white-space: pre-wrap;
+    }
+
     /* Tools footer */
     .tools {
       margin-top: 28px;
@@ -362,22 +383,26 @@
   <h1>HandwritingAI</h1>
   <p class="lede">Transcribe your handwriting and turn it into a font — runs entirely on your machine.</p>
 
-  <!-- Step 1 -->
-  <div class="card">
-    <h2><span class="step">1.</span>Write the prompt below on plain paper</h2>
-    <div class="prompt" id="promptBox">
-      <span class="line">The quick brown fox jumps over the lazy dog.</span>
-      <span class="line">Pack my box with five dozen liquor jugs.</span>
-      <span class="line">How vexingly quick daft zebras jump!</span>
-      <span class="line">0 1 2 3 4 5 6 7 8 9 &nbsp; ! ? . , ; : ' " ( ) - /</span>
+  <div class="card mode-card">
+    <h2>Choose what to do</h2>
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('transcribe', this)">Transcribe</button>
+      <button class="tab" onclick="switchTab('font', this)">Generate font</button>
+      <button class="tab" onclick="switchTab('finetune', this)">Fine-tune</button>
     </div>
-    <button class="copy-link" onclick="copyPrompt()">Copy prompt</button>
-    <ul class="tips">
-      <li>Print, not cursive</li>
-      <li>Plain unlined white paper — printed lines on lined paper interfere with line detection</li>
-      <li>Photo straight-on, even lighting, no shadows</li>
-      <li>Each photo must contain the whole prompt written on exactly <strong>4 lines</strong>, matching the prompt's natural breaks. Photos with a different line count are skipped during fine-tuning.</li>
-      <li>For better fine-tuning, submit <strong>multiple photos</strong> (e.g. 3–5 separate sheets, each with all 4 lines). 4 training samples is rarely enough to meaningfully tune the model.</li>
+  </div>
+
+  <!-- Step 1 -->
+  <div class="card" id="promptCard">
+    <h2 id="promptTitle"><span class="step">1.</span>Upload any handwriting for transcription</h2>
+    <p class="help" id="promptHelp">No prompt is required for transcription. Upload the page or note you want to read.</p>
+    <div class="prompt" id="promptBox">
+      <span class="line">Upload any handwriting you want to transcribe.</span>
+    </div>
+    <button class="copy-link" id="copyPromptBtn" onclick="copyPrompt()" style="display: none;">Copy prompt</button>
+    <ul class="tips" id="promptTips">
+      <li>Use a clear, straight-on photo with even lighting.</li>
+      <li>Transcription accepts regular notes, pages, or tests; no fixed prompt is required.</li>
     </ul>
   </div>
 
@@ -397,13 +422,7 @@
 
   <!-- Step 3 -->
   <div class="card">
-    <h2><span class="step">3.</span>Choose what to do</h2>
-
-    <div class="tabs">
-      <button class="tab active" onclick="switchTab('transcribe', this)">Transcribe</button>
-      <button class="tab" onclick="switchTab('font', this)">Generate font</button>
-      <button class="tab" onclick="switchTab('finetune', this)">Fine-tune</button>
-    </div>
+    <h2><span class="step">3.</span>Run the selected tool</h2>
 
     <!-- Transcribe -->
     <div class="tab-content active" id="tab-transcribe">
@@ -440,15 +459,14 @@
     <div class="tab-content" id="tab-finetune">
       <p class="help">
         Train the recognizer on your specific handwriting style. Submit one or more photos — each with the
-        full prompt on 4 lines. Photos with the wrong line count are skipped (console warning).
+        full sentence prompt on the shown line breaks. Photos with the wrong line count are skipped (console warning).
       </p>
       <p class="help" style="margin-top:8px;">
         <strong>How this works with so few samples:</strong> the trainer applies aggressive data augmentation
         (random rotation, blur, dilation/erosion, elastic warping, noise) to multiply each line image into
-        ~10 distinct variants per epoch. With 1 photo (4 lines) × 10× augmentation × 5 epochs that's 200
-        training passes — enough for the model to start adapting to your stroke style without you writing
-        the prompt 50 times. More photos still help (more raw variety), but a single clean photo is now
-        viable. Expect <strong>5–15 minutes</strong> on CPU.
+        ~10 distinct variants per epoch. With 1 photo of the 3-line sentence prompt × 10× augmentation
+        × 5 epochs that's 150 training passes. This helps the model adapt to stroke style while preserving
+        the word context TrOCR expects. Expect <strong>5–15 minutes</strong> on CPU.
       </p>
       <button class="btn btn-primary" id="finetuneBtn" onclick="runFineTune()">Start fine-tuning</button>
       <div class="status" id="finetuneStatus"></div>
@@ -466,6 +484,23 @@
 <script>
   const API = "http://localhost:8000";
   let selectedFiles = [];
+  let activeMode = "transcribe";
+  let promptData = {
+    font: {
+      lines: [
+        "a b c d e f g h i j k l m n o p q r s t u v w x y z",
+        "A B C D E F G H I J K L M N O P Q R S T U V W X Y Z",
+        `0 1 2 3 4 5 6 7 8 9 ! ? . , ; : ' " ( ) - /`,
+      ],
+    },
+    finetune: {
+      lines: [
+        "the quick brown fox jumps over the lazy dog.",
+        "pack my box with five dozen liquor jugs.",
+        "how vexingly quick daft zebras jump!",
+      ],
+    },
+  };
 
   // File upload
   const uploadZone = document.getElementById("uploadZone");
@@ -539,6 +574,54 @@
     document.querySelectorAll(".tab-content").forEach(t => t.classList.remove("active"));
     btn.classList.add("active");
     document.getElementById("tab-" + name).classList.add("active");
+    activeMode = name;
+    updatePromptGuide(name);
+  }
+
+  function updatePromptGuide(name) {
+    const title = document.getElementById("promptTitle");
+    const help = document.getElementById("promptHelp");
+    const box = document.getElementById("promptBox");
+    const copyBtn = document.getElementById("copyPromptBtn");
+    const tips = document.getElementById("promptTips");
+
+    if (name === "font") {
+      renderPromptLines(promptData.font.lines);
+      title.innerHTML = `<span class="step">1.</span>Write the 3-line font guide`;
+      help.textContent = "Write these exact character rows so the font builder can align each crop to the right glyph.";
+      copyBtn.style.display = "inline";
+      tips.innerHTML = `
+        <li>Use print, not cursive.</li>
+        <li>Plain unlined white paper is best because printed lines interfere with line detection.</li>
+        <li>Each font photo must contain exactly ${promptData.font.lines.length} lines, matching the shown breaks.</li>
+        <li>Keep letters spaced enough that neighboring characters do not touch.</li>`;
+      return;
+    }
+
+    if (name === "finetune") {
+      renderPromptLines(promptData.finetune.lines);
+      title.innerHTML = `<span class="step">1.</span>Write the fine-tuning sentences`;
+      help.textContent = "Write these sentence lines for recognizer training. Sentence samples work better for natural transcription than alphabet rows.";
+      copyBtn.style.display = "inline";
+      tips.innerHTML = `
+        <li>Each fine-tune photo must contain exactly ${promptData.finetune.lines.length} sentence lines.</li>
+        <li>Keep the line breaks the same as shown so labels match the detected rows.</li>
+        <li>Use your normal readable handwriting; print or light cursive is okay for transcription training.</li>`;
+      return;
+    }
+
+    box.innerHTML = `<span class="line">Upload any handwriting you want to transcribe.</span>`;
+    title.innerHTML = `<span class="step">1.</span>Upload any handwriting for transcription`;
+    help.textContent = "No prompt is required for transcription. Upload the page or note you want to read.";
+    copyBtn.style.display = "none";
+    tips.innerHTML = `
+      <li>Use a clear, straight-on photo with even lighting.</li>
+      <li>Transcription accepts regular notes, pages, or tests; no fixed prompt is required.</li>`;
+  }
+
+  function renderPromptLines(lines) {
+    document.getElementById("promptBox").innerHTML =
+      lines.map(line => `<span class="line">${escapeHtml(line)}</span>`).join("");
   }
 
   // Copy
@@ -553,7 +636,7 @@
   }
 
   // API helpers
-  async function uploadAndRun(endpoint, statusId, onSuccess, extraFields = {}) {
+  async function uploadAndRun(endpoint, statusId, onSuccess, extraFields = {}, onError = null) {
     if (selectedFiles.length === 0) {
       alert("Please upload at least one photo first.");
       return;
@@ -569,13 +652,13 @@
     try {
       const res = await fetch(`${API}/${endpoint}`, { method: "POST", body: form });
       const { job_id } = await res.json();
-      pollJob(job_id, statusEl, onSuccess);
+      pollJob(job_id, statusEl, onSuccess, onError);
     } catch (e) {
       setStatus(statusEl, "error", `Error: ${e.message}. Is the server running?`);
     }
   }
 
-  async function pollJob(jobId, statusEl, onSuccess) {
+  async function pollJob(jobId, statusEl, onSuccess, onError = null) {
     const res = await fetch(`${API}/status/${jobId}`);
     const job = await res.json();
 
@@ -584,10 +667,11 @@
       onSuccess(job.result);
     } else if (job.status === "error") {
       setStatus(statusEl, "error", `Error: ${job.error}`);
+      if (onError) onError(job);
     } else {
       const msg = job.progress || "Processing… this may take a few minutes.";
       setStatus(statusEl, "processing", msg);
-      setTimeout(() => pollJob(jobId, statusEl, onSuccess), 1500);
+      setTimeout(() => pollJob(jobId, statusEl, onSuccess, onError), 1500);
     }
   }
 
@@ -634,15 +718,51 @@
     uploadAndRun("generate-font", "fontStatus", result => {
       const box = document.getElementById("fontResult");
       box.classList.add("visible");
+      const preview = result.preview_url
+        ? `<img class="font-preview" src="${API}${result.preview_url}" alt="Labeled glyph alignment preview">`
+        : "";
+      const diag = formatFontDiagnostics(result.diagnostics);
       box.innerHTML = `
-        <a class="download" href="${API}${result}" download="${fontName}.ttf">
+        <a class="download" href="${API}${result.font_url}" download="${fontName}.ttf">
           ⬇ Download ${fontName}.ttf
         </a>
         <p style="color:var(--muted);font-size:0.8rem;margin-top:10px;">
           Install the font on your system, then it'll appear in Word, Canva, etc.
-        </p>`;
+        </p>
+        ${preview}
+        <div class="diag">${escapeHtml(diag)}</div>`;
       document.getElementById("fontBtn").disabled = false;
-    }, { font_name: fontName });
+    }, { font_name: fontName }, showFontError);
+  }
+
+  function showFontError(job) {
+    const box = document.getElementById("fontResult");
+    const result = job.result || {};
+    const preview = result.preview_url
+      ? `<img class="font-preview" src="${API}${result.preview_url}" alt="Labeled glyph alignment preview">`
+      : "";
+    const diag = formatFontDiagnostics(result.diagnostics);
+    box.classList.add("visible");
+    box.innerHTML = `
+      <p style="color:var(--error);font-size:0.85rem;">Font generation was blocked because the prompt could not be aligned confidently.</p>
+      ${preview}
+      <div class="diag">${escapeHtml(diag)}</div>`;
+    document.getElementById("fontBtn").disabled = false;
+  }
+
+  function formatFontDiagnostics(diag) {
+    if (!diag) return "";
+    const lines = [];
+    if (diag.errors && diag.errors.length) lines.push("Errors:\n" + diag.errors.slice(0, 8).join("\n"));
+    if (diag.warnings && diag.warnings.length) lines.push("Warnings:\n" + diag.warnings.slice(0, 8).join("\n"));
+    if (diag.images) {
+      lines.push(diag.images.map((d, i) => {
+        const selected = d.selected_chars ? d.selected_chars.length : 0;
+        const missing = d.missing_chars ? d.missing_chars.length : 0;
+        return `Image ${i + 1}: ${selected} selected chars, ${missing} missing`;
+      }).join("\n"));
+    }
+    return lines.join("\n\n");
   }
 
   // Fine-tune
@@ -691,7 +811,31 @@
   }
 
   // Initial state
+  loadPrompt();
   refreshFineTunedStatus();
+
+  async function loadPrompt() {
+    try {
+      const res = await fetch(`${API}/prompt`);
+      const data = await res.json();
+      if (data.font && Array.isArray(data.font.lines)) promptData.font = data.font;
+      if (data.finetune && Array.isArray(data.finetune.lines)) promptData.finetune = data.finetune;
+      if (!data.font && data.lines && Array.isArray(data.lines)) promptData.font = data;
+    } catch (e) {
+      // Keep the static fallback prompt.
+    }
+    updatePromptGuide(activeMode);
+  }
+
+  function escapeHtml(text) {
+    return text.replace(/[&<>"']/g, ch => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    }[ch]));
+  }
 </script>
 
 </body>

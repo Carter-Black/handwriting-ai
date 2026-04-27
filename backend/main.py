@@ -7,6 +7,7 @@ import threading
 import uuid
 import webbrowser
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +17,8 @@ from pydantic import BaseModel
 
 from recognizer.model import HandwritingRecognizer
 from recognizer.preprocess import preprocess_image, check_quality
-from font_generator.segmenter import segment_characters
+from font_generator.prompt import FINETUNE_PROMPT, FINETUNE_PROMPT_LINES, FONT_PROMPT, FONT_PROMPT_LINES
+from font_generator.segmenter import SegmentAlignmentError, SegmentResult, save_diagnostic_preview, segment_characters
 from font_generator.vectorizer import vectorize_glyphs
 from font_generator.builder import build_font
 
@@ -26,9 +28,10 @@ STORAGE = BASE / "storage"
 UPLOADS = STORAGE / "uploads"
 FONTS = STORAGE / "fonts"
 MODELS = STORAGE / "models"
+DIAGNOSTICS = STORAGE / "diagnostics"
 FRONTEND = BASE.parent / "frontend"
 
-for d in [UPLOADS, FONTS, MODELS]:
+for d in [UPLOADS, FONTS, MODELS, DIAGNOSTICS]:
     d.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="HandwritingAI", version="0.1.0")
@@ -38,16 +41,6 @@ app.mount("/static", StaticFiles(directory=str(FRONTEND)), name="static")
 # in-memory job tracker (fine for a local single-user app)
 jobs: dict[str, dict] = {}
 
-# One entry per visual line on the page. Joined with newlines so the fine-tuner
-# can split it back into per-line labels that match the user's actual line breaks.
-PROMPT_LINES = [
-    "The quick brown fox jumps over the lazy dog.",
-    "Pack my box with five dozen liquor jugs.",
-    "How vexingly quick daft zebras jump!",
-    "0 1 2 3 4 5 6 7 8 9 ! ? . , ; : ' \" ( ) - /",
-]
-PROMPT = "\n".join(PROMPT_LINES)
-
 SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 
 
@@ -56,7 +49,7 @@ SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}
 class StatusResponse(BaseModel):
     job_id: str
     status: str              # pending | processing | done | error
-    result: str | None = None
+    result: Any = None
     error: str | None = None
     progress: str | None = None
 
@@ -80,7 +73,13 @@ async def root():
 
 @app.get("/prompt")
 async def get_prompt():
-    return {"paragraph": PROMPT}
+    return {
+        "font": {"paragraph": FONT_PROMPT, "lines": FONT_PROMPT_LINES},
+        "finetune": {"paragraph": FINETUNE_PROMPT, "lines": FINETUNE_PROMPT_LINES},
+        # Backward-compatible shape for older frontend code.
+        "paragraph": FONT_PROMPT,
+        "lines": FONT_PROMPT_LINES,
+    }
 
 
 @app.post("/upload")
@@ -171,6 +170,14 @@ async def download_font(font_name: str):
     return FileResponse(str(p), media_type="font/ttf", filename=f"{font_name}.ttf")
 
 
+@app.get("/download/font-preview/{preview_name}")
+async def download_font_preview(preview_name: str):
+    p = DIAGNOSTICS / preview_name
+    if not p.exists() or p.suffix.lower() != ".png":
+        raise HTTPException(404, "Font preview not found.")
+    return FileResponse(str(p), media_type="image/png", filename=preview_name)
+
+
 # background tasks
 
 def _run_transcribe(job_id: str, paths: list[str], use_fine_tuned: bool = True, use_large_model: bool = False):
@@ -203,13 +210,38 @@ def _run_transcribe(job_id: str, paths: list[str], use_fine_tuned: bool = True, 
 
 
 def _run_font(job_id: str, paths: list[str], font_name: str):
+    safe_name = _safe_font_name(font_name)
+    preview_file = DIAGNOSTICS / f"{safe_name}-{job_id}.png"
     try:
         _progress(job_id, "Segmenting characters...")
-        glyphs: dict = {}
+        best_samples: dict = {}
+        all_samples = []
+        diagnostics = {"images": [], "errors": [], "warnings": []}
         for i, path in enumerate(paths):
             _progress(job_id, f"Segmenting image {i + 1}/{len(paths)}...")
             img = preprocess_image(path)
-            glyphs.update(segment_characters(img))
+            try:
+                segmented = segment_characters(img)
+            except SegmentAlignmentError as e:
+                segmented = e.result
+                diagnostics["errors"].append(f"Image {i + 1}: {e}")
+            diagnostics["images"].append(segmented.diagnostics)
+            diagnostics["errors"].extend(segmented.diagnostics.get("errors", []))
+            diagnostics["warnings"].extend(segmented.diagnostics.get("warnings", []))
+            all_samples.extend(segmented.samples)
+            for sample in segmented.samples:
+                previous = best_samples.get(sample.char)
+                if previous is None or sample.score > previous.score:
+                    best_samples[sample.char] = sample
+
+        glyphs = {ch: sample.crop for ch, sample in best_samples.items()}
+
+        preview_result = SegmentResult(glyphs=glyphs, diagnostics=diagnostics, samples=all_samples)
+        save_diagnostic_preview(preview_result, preview_file)
+        preview_url = f"/download/font-preview/{preview_file.name}"
+
+        if diagnostics["errors"]:
+            raise ValueError(diagnostics["errors"][0])
 
         if not glyphs:
             raise ValueError("No characters could be segmented. Try a clearer photo.")
@@ -221,12 +253,22 @@ def _run_font(job_id: str, paths: list[str], font_name: str):
             raise ValueError("Vectorization produced no usable glyphs.")
 
         _progress(job_id, "Building font file...")
-        out = str(FONTS / f"{font_name}.ttf")
+        out = str(FONTS / f"{safe_name}.ttf")
         build_font(svg_glyphs, out, family_name=font_name)
 
-        jobs[job_id].update(status="done", result=f"/download/font/{font_name}", progress=None)
+        jobs[job_id].update(status="done", result={
+            "font_url": f"/download/font/{safe_name}",
+            "preview_url": preview_url,
+            "diagnostics": diagnostics,
+        }, progress=None)
     except Exception as e:
-        jobs[job_id].update(status="error", error=str(e))
+        result = None
+        if preview_file.exists():
+            result = {
+                "preview_url": f"/download/font-preview/{preview_file.name}",
+                "diagnostics": locals().get("diagnostics", {}),
+            }
+        jobs[job_id].update(status="error", error=str(e), result=result, progress=None)
 
 
 def _run_finetune(job_id: str, paths: list[str]):
@@ -234,7 +276,7 @@ def _run_finetune(job_id: str, paths: list[str]):
         _progress(job_id, "Loading model...")
         recognizer = HandwritingRecognizer(model_dir=str(MODELS))
         _progress(job_id, "Fine-tuning (this takes a few minutes)...")
-        recognizer.fine_tune(paths, ground_truth=PROMPT)
+        recognizer.fine_tune(paths, ground_truth=FINETUNE_PROMPT)
         jobs[job_id].update(status="done", result="Fine-tuning complete. Model saved.", progress=None)
     except Exception as e:
         jobs[job_id].update(status="error", error=str(e))
@@ -260,6 +302,11 @@ async def _save_uploads(files: list[UploadFile]) -> list[str]:
 
 def _progress(job_id: str, msg: str):
     jobs[job_id].update(status="processing", progress=msg)
+
+
+def _safe_font_name(font_name: str) -> str:
+    cleaned = "".join(c for c in font_name if c.isalnum() or c in ("-", "_"))[:40]
+    return cleaned or "MyHandwriting"
 
 
 if __name__ == "__main__":

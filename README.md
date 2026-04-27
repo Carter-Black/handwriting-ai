@@ -87,26 +87,30 @@ Open your browser at **http://localhost:8000**
 
 ## Usage guide
 
-### Step 1 - Write the prompt paragraph
+### Step 1 - Choose a mode
 
-The app shows you a specific paragraph to write out. It covers all 26 letters (upper and lower case), digits, and common punctuation.
+The tabs at the top change the guide shown on the page:
+
+- **Transcribe:** no fixed prompt; upload the handwriting you want to read.
+- **Generate font:** write the 3-line character guide exactly as shown. It covers lowercase letters, uppercase letters, digits, and common punctuation.
+- **Fine-tune:** write the 3-line sentence prompt exactly as shown. Sentence-style samples train the recognizer on real word context instead of alphabet rows.
 
 > **Use plain unlined white paper.** The line-detection algorithm uses horizontal projection to find rows of writing — printed lines on lined paper are picked up as content and break segmentation. If you need a writing guide, slide a lined sheet under translucent paper.
 >
-> **For best font results:** write in print (not cursive), clearly and consistently.
-> **For best transcription:** any style works; the fine-tuning step adapts the model to your style.
+> **For best font results:** write in print (not cursive), clearly and consistently, with enough space that neighboring letters do not touch.
+> **For best transcription/fine-tuning:** use your normal readable handwriting; print or light cursive is okay.
 
 ### Step 2 - Upload your photos
 
 How many photos depends on what you want to do:
 
 - **For transcription:** any number of photos, any number of lines per photo. Each is transcribed independently. Works on a single page or a 30-line letter.
-- **For fine-tuning:** one or more photos, **each containing the full 4-line prompt**. Photos with the wrong line count are skipped (with a console warning). One clean photo is now viable thanks to data augmentation (see [Fine-tuning](#fine-tuning) below). Multiple photos still help — more raw style variety to augment from.
-- **For font generation:** each photo should be a complete copy of the prompt. Multiple complete copies improve glyph quality since the largest crop per character wins.
+- **For fine-tuning:** one or more photos, **each containing the full 3-line sentence prompt**. Photos with the wrong line count are skipped (with a console warning).
+- **For font generation:** each photo should be a complete copy of the 3-line character guide, including the lowercase row, uppercase row, and digit/punctuation row. Multiple complete copies improve glyph quality; the app chooses the best aligned crop per character.
 
 The app checks each photo for quality (blur, exposure, resolution) and flags any issues before processing starts.
 
-### Step 3 - Choose what to do
+### Step 3 - Run the selected tool
 
 | Mode | What it does | Time (CPU) |
 |------|-------------|------|
@@ -137,9 +141,9 @@ Two TrOCR variants are supported. The base model is loaded by default; the large
 
 ### Fine-tuning
 
-Fine-tuning teaches the model your specific handwriting style — slant, stroke thickness, baseline curvature, letter shapes. It's saved locally and used automatically next time you transcribe.
+Fine-tuning teaches the model your specific handwriting style: slant, stroke thickness, baseline curvature, letter shapes. It uses the sentence prompt shown in the Fine-tune tab, not the font character rows, so the model keeps practicing realistic word sequences. The result is saved locally and used automatically next time you transcribe.
 
-**Why this works without writing the prompt 100 times:** the trainer applies on-the-fly **data augmentation** — every training pass through your handwriting samples sees a slightly different version: rotated ±8°, blurred, with thicker/thinner strokes (dilation/erosion), with elastic warping, with downscaling, with brightness shift. Each variant is still your handwriting, just perturbed. The default 10× multiplier × 5 epochs turns a single 4-line photo into 200 training passes.
+**Why this works without writing the prompt 100 times:** the trainer applies on-the-fly **data augmentation** — every training pass through your handwriting samples sees a slightly different version: rotated ±8°, blurred, with thicker/thinner strokes (dilation/erosion), with elastic warping, with downscaling, with brightness shift. Each variant is still your handwriting, just perturbed. The default 10× multiplier × 5 epochs turns a single 3-line photo into 150 training passes.
 
 This follows the **DA2 augmentation strategy** documented in the [TrOCR paper §3.2](https://arxiv.org/abs/2109.10282), with elastic deformation per Simard, Steinkraus & Platt (ICDAR 2003) — research identifies elastic distortion as the highest-gain single augmentation for HTR ([arXiv:2508.11499](https://arxiv.org/abs/2508.11499)).
 
@@ -152,7 +156,7 @@ This follows the **DA2 augmentation strategy** documented in the [TrOCR paper §
 | `augment_multiplier` | 10 | Effective dataset size per epoch = real_pairs × multiplier. Raise to 20 for slower-but-stronger training. |
 | Encoder freeze | OFF | The DLoRA-TrOCR ablation ([arXiv:2404.12734v3](https://arxiv.org/abs/2404.12734)) found decoder-only fine-tuning is the *worst* PEFT strategy for TrOCR. Visual style adaptation lives in the encoder, so we train both. |
 
-**Honest expectations:** the published threshold for visible improvement on TrOCR fine-tuning is ~500 line examples (Parres et al.). With 1 photo (4 real lines × 10× augment × 5 epochs = 200 passes), expect *some* improvement; with 5 photos × the same multiplier × epochs = 1000 passes, you're in the regime the literature says works. If after fine-tuning the output is still identical to base, the ceiling is the recognizer's general capability — try the **larger model** toggle instead.
+**Honest expectations:** one clean sentence-prompt photo is enough to create a local fine-tune because augmentation turns 3 real lines into 150 training passes. More clean copies can still help, especially if your handwriting varies by size or slant. If a fine-tune hurts free-form transcription, use the base/large model toggle to compare outputs or delete the fine-tuned model from the tools section.
 
 ### Where files are stored
 
@@ -219,9 +223,9 @@ handwriting-ai/
 
 This project avoids training from scratch. It uses **Microsoft TrOCR** (`trocr-base-handwritten` by default, with `-large-` as an opt-in toggle), a pre-trained encoder-decoder Transformer that already understands English handwriting. Fine-tuning trains both the encoder and decoder on your samples with aggressive on-the-fly augmentation, takes 5–15 minutes on a CPU, and produces a personalized model saved entirely locally.
 
-Generation parameters use the canonical TrOCR config (`num_beams=4, length_penalty=2.0, no_repeat_ngram_size=3, max_new_tokens=128, early_stopping=True`) shipped with the model's `generation_config.json`. A post-processor caps consecutive identical tokens at 3 to clean up beam search loops on out-of-distribution input (rows of standalone digits/punctuation).
+Generation parameters use the canonical TrOCR config (`num_beams=4, length_penalty=2.0, no_repeat_ngram_size=3, max_new_tokens=128, early_stopping=True`) shipped with the model's `generation_config.json`. A post-processor caps consecutive identical tokens at 3 to clean up beam search loops on out-of-distribution input (rows of standalone characters).
 
-The font pipeline doesn't use ML at all — it's pure computer vision: OpenCV connected-components segmentation, potrace bitmap-to-vector tracing, then `fontTools` assembly of a TTF using `Cu2QuPen` (cubic-to-quadratic conversion + winding direction reversal in one shot — same chain `ufo2ft` uses for production fonts) with all Windows-required OS/2 / head / name fields set per the [OpenType spec recommendations](https://learn.microsoft.com/en-us/typography/opentype/spec/recom).
+The font pipeline doesn't use ML at all — it's pure computer vision: forced prompt alignment with OpenCV connected components, potrace bitmap-to-vector tracing, then `fontTools` assembly of a TTF using flattened outlines with all Windows-required OS/2 / head / name fields set per the [OpenType spec recommendations](https://learn.microsoft.com/en-us/typography/opentype/spec/recom). If the prompt can't be aligned confidently, font generation is blocked and a labeled crop preview is shown instead.
 
 ---
 
@@ -239,14 +243,34 @@ python scripts/test_htr.py photo.jpg --save-preprocessed
 
 ---
 
+## Development snapshots
+
+In-progress screenshots and handwritten input examples live in `docs/development-images/`. These are useful for tracking how segmentation, glyph alignment, and font rendering improve over time.
+
+<table>
+  <tr>
+    <td align="center"><strong>Not really a font</strong></td>
+    <td align="center"><strong>First font</strong></td>
+    <td align="center"><strong>Closer to a font</strong></td>
+    <td align="center"><strong>Pretty much a font</strong></td>
+  </tr>
+  <tr>
+    <td><img src="docs/development-images/NotReallyAFont.png" alt="Early font output with broken glyphs" width="180"></td>
+    <td><img src="docs/development-images/FirstFont.png" alt="First recognizable generated font output" width="180"></td>
+    <td><img src="docs/development-images/ClosertoaFont.png" alt="Improved generated font output" width="180"></td>
+    <td><img src="docs/development-images/PrettyMucchaFont.png" alt="Generated font output close to the target handwriting" width="180"></td>
+  </tr>
+</table>
+
+---
+
 ## Known limitations
 
 - **Cursive writing** is harder to segment for font generation; print works best for fonts.
 - **Lined paper** breaks line segmentation — use plain white paper. Printed rules are picked up as content by the horizontal projection algorithm.
 - **Lighting matters** — avoid shadows across the paper.
-- **Fine-tuning requires exactly 4 lines per image** (matching the prompt structure). Photos with the wrong line count are skipped with a warning. Each label maps line-by-line to its corresponding handwritten line.
-- **The structured digits/punctuation row** (line 4 of the prompt) is out-of-distribution for TrOCR's RoBERTa decoder, which is trained on natural English. Even after fine-tuning, beam search can wander on this line. The `_trim_repeats` post-processor cleans up the most egregious loops but doesn't fully fix the underlying issue. For pure character-list recognition, `microsoft/trocr-base-printed` or PaddleOCR are documented as better fits.
-- **Fine-tuning has hard limits.** Visible CER improvement requires more data than a few photos can provide ([Parres et al.](https://arxiv.org/abs/2503.19546) cite ~500 line examples as the threshold). Augmentation closes some of the gap but not all of it. If fine-tuning isn't helping, switch to the larger model toggle.
+- **Fine-tuning requires exactly 3 sentence lines per image** (matching the Fine-tune tab prompt). Photos with the wrong line count are skipped with a warning. Each label maps line-by-line to its corresponding handwritten line.
+- **The font character guide is only for font generation.** Structured alphabet rows are out-of-distribution for TrOCR's RoBERTa decoder, so they are no longer used as the fine-tuning target.
 - Tested on Python 3.10–3.14, macOS 13+, Ubuntu 22.04, Windows 10/11.
 
 ---
@@ -261,18 +285,19 @@ python scripts/test_htr.py photo.jpg --save-preprocessed
 
 ---
 
-## Built with Claude Code
+## Built with Claude Code and OpenAI Codex
 
-Developed collaboratively with [Claude Code](https://claude.com/claude-code). The architecture and design calls are mine: local-only with no external APIs, TrOCR instead of training a recognizer from scratch, a projection + connected-components segmenter over a heavier ML approach, and a FastAPI job queue in place of a full task framework.
+Developed collaboratively with [Claude Code](https://claude.com/claude-code) and OpenAI Codex. The architecture and design calls are mine: local-only with no external APIs, TrOCR instead of training a recognizer from scratch, a projection + connected-components segmenter over a heavier ML approach, and a FastAPI job queue in place of a full task framework.
 
-Claude accelerated the fiddly parts. Highlights from the build:
+Claude and Codex accelerated the fiddly parts. Highlights from the build:
 - Diagnosed the **`flagCubic` "shattered glyph" bug** in TTF generation — `TTGlyphPen.curveTo()` quietly emits cubic-extension bytes that Windows GDI can't decode, producing the classic "random lines" rendering. Switched to `Cu2QuPen` (the ufo2ft path) and added a one-line diagnostic to detect the flag in any future builds.
+- Tracked down the **potrace relative-command parser bug** where lowercase SVG commands like `c` were ignored, causing valid glyph outlines to turn into diagonal slash/starburst geometry.
 - Caught the **`Seq2SeqTrainer save_strategy="epoch"` disk-bloat bug** writing ~12 GB of optimizer-state checkpoints per fine-tune, never reused.
 - Fixed the **fine-tune label-misalignment bug** where `_split_text` was chunking the prompt by word count instead of by line, training the model on (line_image, wrong_text) pairs and overfitting on whichever phrase happened to dominate.
 - Tracked down a **UTF-8 parser issue in `install.bat`** where cmd.exe was fragmenting commands on multi-byte characters.
-- Implemented the **DA2 augmentation pipeline** (rotation, blur, dilation, erosion, downscaling, noise, brightness shift, elastic deformation) so fine-tuning can extract signal from a single 4-line photo instead of requiring 500+ samples.
+- Implemented the **DA2 augmentation pipeline** (rotation, blur, dilation, erosion, downscaling, noise, brightness shift, elastic deformation) so fine-tuning can extract signal from a single prompt photo instead of requiring a large handwriting dataset.
 
-Two of those fixes came out of dedicated Claude + some GPT Research sessions targeting the font and transcription failure modes specifically — the research was good enough that the resulting code change followed directly from the report.
+Several of those fixes came out of dedicated Claude, GPT Research, and Codex sessions targeting the font and transcription failure modes specifically — the research and debugging were good enough that the resulting code changes followed directly from the reports.
 
 Combined human + AI development is the direction things are heading; this project is a deliberate lean into that workflow as much as I could while still maintaining control over things every step along the way.
 

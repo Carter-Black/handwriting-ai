@@ -87,7 +87,7 @@ class HandwritingRecognizer:
             with torch.no_grad():
                 ids = self.model.generate(px, **GENERATE_KWARGS)
             raw = self.processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
-            text = _trim_trailing_noise(_trim_repeats(raw))
+            text = _clean_transcription(raw)
             out.append(text)
             if text != raw:
                 print(f"[transcribe]   line {i+1}/{total} (h={line.height}): {text!r} (cleaned)")
@@ -112,7 +112,7 @@ class HandwritingRecognizer:
         Saves the fine-tuned model locally so it only needs to run once.
         """
         # Split ground truth on newlines — one expected label per visual line.
-        # This is how the prompt is structured (4 lines on the page); each
+        # This is how the prompt is structured on the page; each
         # detected handwritten line gets paired with its corresponding label.
         # No more word-count splitting → no more misaligned labels.
         expected_lines = [l.strip() for l in ground_truth.split("\n") if l.strip()]
@@ -432,6 +432,55 @@ def _trim_trailing_noise(text: str) -> str:
         text = text.rstrip()
         if text == prev:
             break
+    return text
+
+
+def _clean_transcription(text: str) -> str:
+    """Apply conservative cleanup for generation artifacts and prompt-row loops."""
+    return _trim_prompt_row_hallucination(_trim_trailing_noise(_trim_repeats(text)))
+
+
+def _trim_prompt_row_hallucination(text: str) -> str:
+    """
+    Fine-tuning on standalone alphabet rows can make TrOCR append
+    'a b c d e ...' when it is uncertain on a short natural-language line.
+    Trim long alphabet/digit-row suffixes while leaving ordinary words alone.
+    """
+    import re as _re
+
+    tokens = text.split()
+    if len(tokens) < 8:
+        return text
+
+    lower_alpha = list("abcdefghijklmnopqrstuvwxyz")
+    upper_alpha = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    digits = list("0123456789")
+
+    for sequence in (lower_alpha, upper_alpha, digits):
+        best_start = None
+        best_len = 0
+        for start in range(len(tokens)):
+            seq_i = 0
+            run_len = 0
+            for tok in tokens[start:]:
+                clean = _re.sub(r"[^A-Za-z0-9]", "", tok)
+                if seq_i < len(sequence) and clean == sequence[seq_i]:
+                    run_len += 1
+                    seq_i += 1
+                elif run_len > 0:
+                    break
+                else:
+                    break
+            if run_len > best_len:
+                best_start = start
+                best_len = run_len
+        if best_start is not None and best_len >= 8:
+            # If the line is essentially only the prompt row, keep it. If it
+            # starts with normal words then devolves into the prompt sequence,
+            # trim the hallucinated suffix.
+            if best_start <= 1 and best_len >= len(tokens) - 1:
+                return text
+            return " ".join(tokens[:best_start]).rstrip(" ,;:")
     return text
 
 

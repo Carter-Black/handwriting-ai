@@ -245,20 +245,20 @@ python scripts/test_htr.py photo.jpg --save-preprocessed
 
 ## Development snapshots
 
-In-progress screenshots and handwritten input examples live in `docs/development-images/`. These are useful for tracking how segmentation, glyph alignment, and font rendering improve over time.
+I kept a few screenshots from the font-generation journey because the progress was honestly pretty satisfying to watch. It went from "that is absolutely not a font" to something close enough that I could actually type with my own handwriting.
 
 <table>
   <tr>
-    <td align="center"><strong>Not really a font</strong></td>
-    <td align="center"><strong>First font</strong></td>
-    <td align="center"><strong>Closer to a font</strong></td>
-    <td align="center"><strong>Pretty much a font</strong></td>
+    <td align="center"><strong>Not really a font yet</strong></td>
+    <td align="center"><strong>First real signs of life</strong></td>
+    <td align="center"><strong>Getting much closer</strong></td>
+    <td align="center"><strong>Pretty much my handwriting</strong></td>
   </tr>
   <tr>
-    <td><img src="docs/development-images/NotReallyAFont.png" alt="Early font output with broken glyphs" width="180"></td>
-    <td><img src="docs/development-images/FirstFont.png" alt="First recognizable generated font output" width="180"></td>
-    <td><img src="docs/development-images/ClosertoaFont.png" alt="Improved generated font output" width="180"></td>
-    <td><img src="docs/development-images/PrettyMucchaFont.png" alt="Generated font output close to the target handwriting" width="180"></td>
+    <td><img src="docs/development-images/NotReallyAFont.png" alt="Early attempt before the generated font was readable" width="180"></td>
+    <td><img src="docs/development-images/FirstFont.png" alt="First generated font attempt that started to look like writing" width="180"></td>
+    <td><img src="docs/development-images/ClosertoaFont.png" alt="Generated font getting closer to personal handwriting" width="180"></td>
+    <td><img src="docs/development-images/PrettyMucchaFont.png" alt="Generated font that is close to personal handwriting" width="180"></td>
   </tr>
 </table>
 
@@ -287,7 +287,7 @@ In-progress screenshots and handwritten input examples live in `docs/development
 
 ## Built with Claude Code and OpenAI Codex
 
-Developed collaboratively with [Claude Code](https://claude.com/claude-code) and OpenAI Codex. The architecture and design calls are mine: local-only with no external APIs, TrOCR instead of training a recognizer from scratch, a projection + connected-components segmenter over a heavier ML approach, and a FastAPI job queue in place of a full task framework.
+Developed collaboratively with Claude Code and OpenAI Codex. The architecture and design calls are mine: local-only with no external APIs, TrOCR instead of training a recognizer from scratch, a projection + connected-components segmenter over a heavier ML approach, and a FastAPI job queue in place of a full task framework.
 
 Claude and Codex accelerated the fiddly parts. Highlights from the build:
 - Diagnosed the **`flagCubic` "shattered glyph" bug** in TTF generation — `TTGlyphPen.curveTo()` quietly emits cubic-extension bytes that Windows GDI can't decode, producing the classic "random lines" rendering. Switched to `Cu2QuPen` (the ufo2ft path) and added a one-line diagnostic to detect the flag in any future builds.

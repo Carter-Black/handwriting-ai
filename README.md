@@ -275,16 +275,6 @@ I kept a few screenshots from the font-generation journey because the progress w
 
 ---
 
-## Roadmap
-
-- [ ] Cursive character segmentation (v2)
-- [ ] Variable font support (weight/size variants)
-- [ ] Batch transcription of multiple pages
-- [ ] Export transcription as `.docx` / `.pdf`
-- [ ] Drag-to-reorder glyph editor before font export
-
----
-
 ## Built with Claude Code and OpenAI Codex
 
 Developed collaboratively with Claude Code and OpenAI Codex. The architecture and design calls are mine: local-only with no external APIs, TrOCR instead of training a recognizer from scratch, a projection + connected-components segmenter over a heavier ML approach, and a FastAPI job queue in place of a full task framework.
